@@ -157,6 +157,33 @@ func TestRunDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+// Regression for issue #3: a group imported from the router with a
+// single-label entry (`include youtube`) must not plan its deletion.
+func TestDryRunKeepsImportedSingleLabel(t *testing.T) {
+	e := newEnv(t, `
+  - name: domain-list0
+    connection: awg
+    include: [youtube, youtube.com]
+    collapse_subdomains: false
+`)
+	e.fake = fake.New("object-group fqdn domain-list0\n    include youtube\n    include youtube.com\n" +
+		"dns-proxy\n    route object-group domain-list0 Wireguard0 auto\n")
+	e.s.Router = router.NewClient(e.fake, cli.Planner{}, router.Options{Timeout: time.Second})
+	res, err := e.s.Run(context.Background(), Options{DryRun: true, Groups: []string{"domain-list0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := res.Groups[0]
+	if g.Err != nil || g.Dropped != 0 || g.Entries != 2 {
+		t.Fatalf("group: %+v", g)
+	}
+	for _, c := range res.Apply.Plan.Commands {
+		if strings.Contains(c, "domain-list0") {
+			t.Fatalf("unexpected change to domain-list0: %q", c)
+		}
+	}
+}
+
 func TestRunGroupFailureIsolated(t *testing.T) {
 	e := newEnv(t, "prune: true")
 	ctx := context.Background()

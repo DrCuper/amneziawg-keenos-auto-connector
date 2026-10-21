@@ -13,10 +13,27 @@ import (
 // Normalize lowercases, trims, converts IDN to punycode, drops service names
 // and invalid entries and deduplicates, keeping first occurrence. It returns
 // the valid entries and the number of entries dropped as invalid.
+//
+// Normalize is meant for external lists: it also drops every single-label
+// name (bare TLDs, hosts-file names). Entries the operator wrote by hand go
+// through NormalizeManual instead.
 func Normalize(in []string) (out []string, dropped int) {
+	return normalize(in, false)
+}
+
+// NormalizeManual is Normalize for operator-written entries (domains.yaml
+// include/remove/exclude, CLI edits). It keeps single-label names such as
+// `youtube` that the router accepts in `object-group fqdn … include`, so a
+// group imported from the router does not plan their deletion. Reserved
+// local/service names (localhost, local, ...) are still dropped.
+func NormalizeManual(in []string) (out []string, dropped int) {
+	return normalize(in, true)
+}
+
+func normalize(in []string, singleLabel bool) (out []string, dropped int) {
 	seen := map[string]bool{}
 	for _, raw := range in {
-		e, ok := normalizeOne(raw)
+		e, ok := normalizeOne(raw, singleLabel)
 		if !ok {
 			dropped++
 			continue
@@ -30,7 +47,7 @@ func Normalize(in []string) (out []string, dropped int) {
 	return out, dropped
 }
 
-func normalizeOne(raw string) (string, bool) {
+func normalizeOne(raw string, singleLabel bool) (string, bool) {
 	e := strings.ToLower(strings.TrimSpace(raw))
 	e = strings.TrimPrefix(e, "*.")
 	e = strings.TrimPrefix(e, ".")
@@ -44,7 +61,7 @@ func normalizeOne(raw string) (string, bool) {
 		}
 		return e, true
 	}
-	if !strings.Contains(e, ".") {
+	if !strings.Contains(e, ".") && (!singleLabel || reservedNames[e]) {
 		// localhost, local, bare TLDs, "*"
 		return "", false
 	}
@@ -57,6 +74,15 @@ func normalizeOne(raw string) (string, bool) {
 		return "", false
 	}
 	return e, true
+}
+
+// reservedNames are single-label local/service names that are never routed,
+// even when written by hand.
+var reservedNames = map[string]bool{
+	"*": true, "localhost": true, "local": true, "localdomain": true,
+	"broadcasthost": true, "ip6-localhost": true, "ip6-loopback": true,
+	"ip6-localnet": true, "ip6-mcastprefix": true, "ip6-allnodes": true,
+	"ip6-allrouters": true, "ip6-allhosts": true,
 }
 
 func isIPOrCIDR(s string) bool {
