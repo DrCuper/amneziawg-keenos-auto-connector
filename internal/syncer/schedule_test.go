@@ -22,9 +22,11 @@ func TestParseSchedule(t *testing.T) {
 
 func TestSchedulerSkipOverlapAndStop(t *testing.T) {
 	var runs atomic.Int32
+	triggers := make(chan string, 4)
 	release := make(chan struct{})
-	s := &Scheduler{Schedule: "@every 1h", RunOnStart: true, Run: func(ctx context.Context) error {
+	s := &Scheduler{Schedule: "@every 1h", RunOnStart: true, Run: func(ctx context.Context, trigger string) error {
 		runs.Add(1)
+		triggers <- trigger
 		<-release
 		return nil
 	}}
@@ -59,6 +61,9 @@ func TestSchedulerSkipOverlapAndStop(t *testing.T) {
 	}
 	if runs.Load() != 2 {
 		t.Fatalf("runs=%d", runs.Load())
+	}
+	if a, b := <-triggers, <-triggers; a != TriggerSchedule || b != TriggerStartup {
+		t.Errorf("triggers %q, %q", a, b)
 	}
 }
 

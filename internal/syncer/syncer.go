@@ -38,8 +38,11 @@ type Syncer struct {
 	// MinShrinkBase is the applied size below which the shrink guard is off.
 	MinShrinkBase int
 	KeepVersions  int
-	Logger        *slog.Logger
-	Now           func() time.Time
+	// Observers are told about every sync, rollback and manual edit after it
+	// finished (journal, notifications). They must not block for long.
+	Observers []Observer
+	Logger    *slog.Logger
+	Now       func() time.Time
 }
 
 // Options tune one run.
@@ -47,6 +50,9 @@ type Options struct {
 	DryRun bool
 	Force  bool // bypass the shrink guard
 	Groups []string
+	// Trigger says who started the run (TriggerCLI, TriggerSchedule, ...);
+	// empty means TriggerCLI.
+	Trigger string
 	// pins overrides the stored pinned version (used by Rollback --dry-run).
 	pins map[string]int
 }
@@ -124,7 +130,22 @@ func (s *Syncer) now() time.Time {
 // Run builds the groups and applies them. The returned error is non-nil when
 // the spec could not be loaded, the router apply failed, or any group failed
 // (then it wraps ErrGroupsFailed and the Result still describes everything).
+// Observers receive a Report afterwards.
 func (s *Syncer) Run(ctx context.Context, opts Options) (*Result, error) {
+	kind := KindSync
+	if opts.pins != nil {
+		kind = KindRollback
+	}
+	started := time.Now()
+	res, err := s.run(ctx, opts)
+	s.report(ctx, &Report{
+		Kind: kind, Trigger: opts.Trigger, DryRun: opts.DryRun, Groups: opts.Groups,
+		Started: started, Duration: time.Since(started), Result: res, Err: err,
+	})
+	return res, err
+}
+
+func (s *Syncer) run(ctx context.Context, opts Options) (*Result, error) {
 	spec, err := domains.Load(s.SpecPath)
 	if err != nil {
 		return nil, err
@@ -375,7 +396,11 @@ func (s *Syncer) Unpin(group string) error {
 		return nil
 	}
 	st.Pinned = 0
-	return s.Store.SetGroupState(group, st)
+	if err := s.Store.SetGroupState(group, st); err != nil {
+		return err
+	}
+	s.reportManual(&ManualEdit{Group: group, Op: ManualUnpin})
+	return nil
 }
 
 // AddManual records entries to always include (and un-removes them).
@@ -395,7 +420,11 @@ func (s *Syncer) ClearManual(group string) error {
 		return err
 	}
 	st.ManualInclude, st.ManualRemove = nil, nil
-	return s.Store.SetGroupState(group, st)
+	if err := s.Store.SetGroupState(group, st); err != nil {
+		return err
+	}
+	s.reportManual(&ManualEdit{Group: group, Op: ManualClear})
+	return nil
 }
 
 func (s *Syncer) editManual(group string, entries []string, include bool) ([]string, error) {
@@ -413,7 +442,15 @@ func (s *Syncer) editManual(group string, entries []string, include bool) ([]str
 	}
 	*to = union(*to, norm)
 	*from = without(*from, norm)
-	return norm, s.Store.SetGroupState(group, st)
+	if err := s.Store.SetGroupState(group, st); err != nil {
+		return nil, err
+	}
+	op := ManualAdd
+	if !include {
+		op = ManualRemove
+	}
+	s.reportManual(&ManualEdit{Group: group, Op: op, Entries: norm})
+	return norm, nil
 }
 
 func union(a, b []string) []string {

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/app"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/domains"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/health"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/store"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/syncer"
 )
@@ -97,12 +100,43 @@ func newServeCmd(cfgPath *string) *cobra.Command {
 			}
 			runOnStart := a.Config.Sync.RunOnStart == nil || *a.Config.Sync.RunOnStart
 			sch := &syncer.Scheduler{Syncer: s, Schedule: schedule, RunOnStart: runOnStart && !noStart, Logger: a.Logger}
-			return sch.Start(c.Context())
+
+			ctx, cancel := context.WithCancel(c.Context())
+			var wg sync.WaitGroup
+			defer wg.Wait()
+			defer cancel() // runs before wg.Wait
+			mon := &health.Monitor{Checks: a.HealthChecks(), Interval: a.Config.Health.Interval, Alerts: a.Alerter(), Logger: a.Logger}
+			wg.Add(2)
+			go func() { defer wg.Done(); mon.Run(ctx) }()
+			go func() { defer wg.Done(); prunePeriodically(ctx, a) }()
+			return sch.Start(ctx)
 		},
 	}
 	cmd.Flags().StringVar(&schedule, "schedule", "", "cron expression (default: sync.schedule from config)")
 	cmd.Flags().BoolVar(&noStart, "no-run-on-start", false, "do not sync at startup")
 	return cmd
+}
+
+// prunePeriodically rotates the journal at startup and then daily.
+func prunePeriodically(ctx context.Context, a *app.App) {
+	j := a.Journal()
+	if j == nil {
+		return
+	}
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		if n, err := j.Prune(); err != nil {
+			a.Logger.Warn("journal: prune failed", "err", err)
+		} else if n > 0 {
+			a.Logger.Info("journal: pruned", "removed", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func newGroupsCmd(cfgPath *string) *cobra.Command {
