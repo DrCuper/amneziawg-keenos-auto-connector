@@ -1,0 +1,28 @@
+# Copy to config.yaml. Secrets may be left out of this file and provided via
+# environment variables instead:
+#   AWGKEEN_ROUTER_PASSWORD   router password (rci and ssh)
+#   AWGKEEN_ROUTER_KEY_FILE   SSH private key path (ssh)
+# Environment values take precedence over the file.
+
+router:
+  transport: rci                # rci | ssh
+  url: http://192.168.1.1       # rci: router web address (LAN; KeenDNS is not supported)
+  # host: 192.168.1.1:22        # ssh: host[:port]
+  # key_file: ~/.ssh/keenetic   # ssh: private key (or AWGKEEN_ROUTER_KEY_FILE)
+  # known_hosts_file: ~/.ssh/known_hosts
+  # insecure_host_key: false    # ssh: accept any host key (lab only)
+  username: admin
+  # password: ""                # or AWGKEEN_ROUTER_PASSWORD
+
+  timeout: 15s                  # per transport call
+  retries: 3                    # transport-error retries with exponential backoff
+  retry_delay: 500ms
+  lock_file: /var/lib/awgkeen/router.lock   # cross-process lock; empty = in-process only
+  lock_timeout: 0s              # 0 = fail immediately when another apply is running
+  backup_dir: /var/lib/awgkeen/backups      # running-config copy before every change
+  save_config: true             # run `system configuration save` after apply
+  max_entries: 2000             # include+exclude limit per group
+
+log:
+  level: info                   # debug | info | warn | error
+  format: text                  # text | json

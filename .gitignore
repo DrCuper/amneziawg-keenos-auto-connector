@@ -1,0 +1,5 @@
+bin/
+*.log
+backups/
+config.yaml
+.awgkeen.lock
