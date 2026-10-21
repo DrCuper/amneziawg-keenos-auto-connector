@@ -23,6 +23,20 @@ router:
   save_config: true             # run `system configuration save` after apply
   max_entries: 2000             # include+exclude limit per group
 
+# Service state: group versions, manual edits (`groups add|remove`), source cache.
+state_dir: /var/lib/awgkeen
+
+sync:
+  domains_file: domains.yaml    # groups, connections and sources (see examples/domains.yaml)
+  schedule: "0 */6 * * *"       # `awgkeen serve`: cron (5 fields, @hourly, @every 6h)
+  run_on_start: true            # `awgkeen serve`: sync once at startup
+  max_shrink: 0.5               # block a group that lost more than 50% of entries vs applied (sync --force overrides)
+  on_limit: error               # error | truncate when a group exceeds max_entries
+  keep_versions: 10             # versions kept per group for `groups rollback`
+  source_timeout: 30s           # per URL download
+  source_max_bytes: 10485760    # 10 MiB per list
+  # user_agent: awgkeen
+
 log:
   level: info                   # debug | info | warn | error
   format: text                  # text | json

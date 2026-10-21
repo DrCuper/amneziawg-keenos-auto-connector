@@ -5,21 +5,30 @@ package app
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/config"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/domains"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/cli"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/rci"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/sshx"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/source"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/store"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/syncer"
 )
 
 // App holds the wired components.
 type App struct {
-	Config    config.Config
+	Config config.Config
+	// ConfigDir is the directory of the loaded config file ("" when built
+	// from an in-memory config); relative paths in the config resolve to it.
+	ConfigDir string
 	Transport router.Transport
 	Client    *router.Client
 	Logger    *slog.Logger
@@ -31,7 +40,14 @@ func New(cfgPath string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return FromConfig(cfg)
+	a, err := FromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if abs, err := filepath.Abs(cfgPath); err == nil {
+		a.ConfigDir = filepath.Dir(abs)
+	}
+	return a, nil
 }
 
 // FromConfig builds the app from an already loaded configuration.
@@ -71,6 +87,42 @@ func (a *App) options(save bool) router.Options {
 
 // Close releases the transport.
 func (a *App) Close() error { return a.Transport.Close() }
+
+// OpenStore opens the file store under state_dir.
+func (a *App) OpenStore() (*store.File, error) {
+	return store.NewFile(a.Config.StateDir)
+}
+
+// NewSyncer wires store, fetcher and router client for `sync`, `serve` and
+// `groups`. The domains file path is resolved relative to the config file's
+// directory when not absolute.
+func (a *App) NewSyncer(st store.Store) *syncer.Syncer {
+	sc := a.Config.Sync
+	return &syncer.Syncer{
+		SpecPath: a.DomainsFile(),
+		Store:    st,
+		Fetcher: &source.Fetcher{
+			HTTP:      &http.Client{Timeout: sc.SourceTimeout},
+			Cache:     st,
+			MaxBytes:  sc.SourceMaxBytes,
+			UserAgent: sc.UserAgent,
+		},
+		Router:       a.Client,
+		Limits:       domains.Limits{MaxEntries: a.Config.Router.MaxEntries, OnLimit: domains.OnLimit(sc.OnLimit)},
+		MaxShrink:    sc.MaxShrink,
+		KeepVersions: sc.KeepVersions,
+		Logger:       a.Logger,
+	}
+}
+
+// DomainsFile returns the absolute path of sync.domains_file.
+func (a *App) DomainsFile() string {
+	p := a.Config.Sync.DomainsFile
+	if !filepath.IsAbs(p) && a.ConfigDir != "" {
+		p = filepath.Join(a.ConfigDir, p)
+	}
+	return p
+}
 
 // NewTransport picks the transport from the configuration.
 func NewTransport(r config.Router) (router.Transport, error) {
