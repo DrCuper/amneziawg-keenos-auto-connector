@@ -399,7 +399,7 @@ func (s *Syncer) ClearManual(group string) error {
 }
 
 func (s *Syncer) editManual(group string, entries []string, include bool) ([]string, error) {
-	norm, dropped := domains.Normalize(entries)
+	norm, dropped := domains.NormalizeManual(entries)
 	if dropped > 0 || len(norm) == 0 {
 		return nil, fmt.Errorf("invalid entries in %v", entries)
 	}

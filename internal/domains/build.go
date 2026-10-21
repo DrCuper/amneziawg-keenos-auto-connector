@@ -79,9 +79,10 @@ func Build(g *Group, in Input, limits Limits) (*Built, error) {
 	b := &Built{}
 
 	// Collect in priority order, tagging per-source counts.
-	var all []string
-	all = append(all, g.Include...)
-	all = append(all, in.ManualInclude...)
+	// Operator-written entries may be single-label names (`youtube`);
+	// sources may not.
+	all, dropped := NormalizeManual(append(append([]string{}, g.Include...), in.ManualInclude...))
+	b.Dropped += dropped
 	for _, fs := range in.Sources {
 		format, _ := source.ParseFormat(fs.Source.Format)
 		entries, st := source.Parse(format, fs.Body)
@@ -99,13 +100,11 @@ func Build(g *Group, in Input, limits Limits) (*Built, error) {
 		all = append(all, valid...)
 	}
 
-	// Sources were normalized above, so this pass only drops invalid manual
-	// entries and deduplicates across sources.
-	entries, dropped := Normalize(all)
-	b.Dropped += dropped
+	// Everything was normalized above, so this pass only deduplicates.
+	entries, _ := NormalizeManual(all)
 
 	// Remove lists.
-	remove, _ := Normalize(append(append([]string{}, g.Remove...), in.ManualRemove...))
+	remove, _ := NormalizeManual(append(append([]string{}, g.Remove...), in.ManualRemove...))
 	if len(remove) > 0 {
 		rm := map[string]bool{}
 		for _, e := range remove {
@@ -130,7 +129,7 @@ func Build(g *Group, in Input, limits Limits) (*Built, error) {
 	if g.MaxEntries > 0 {
 		limit = g.MaxEntries
 	}
-	exclude, _ := Normalize(g.Exclude)
+	exclude, _ := NormalizeManual(g.Exclude)
 	if limit > 0 && len(entries)+len(exclude) > limit {
 		switch limits.OnLimit {
 		case OnLimitTruncate:

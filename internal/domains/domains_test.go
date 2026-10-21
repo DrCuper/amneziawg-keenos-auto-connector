@@ -73,6 +73,40 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+func TestNormalizeManualSingleLabel(t *testing.T) {
+	in := []string{"YouTube", "youtube.", "ютуб", "localhost", "local", "*", "ip6-localhost", "bad name", "-x", "example.com"}
+	out, dropped := NormalizeManual(in)
+	want := []string{"youtube", "xn--90a7ad6b", "example.com"}
+	if strings.Join(out, " ") != strings.Join(want, " ") {
+		t.Fatalf("got %v want %v", out, want)
+	}
+	if dropped != 6 {
+		t.Fatalf("dropped %d", dropped)
+	}
+}
+
+// Regression for issue #3: a single-label include imported from the router
+// must survive the build; the same name from a source list is still dropped.
+func TestBuildKeepsSingleLabelInclude(t *testing.T) {
+	no := false
+	g := &Group{Name: "domain-list0", Include: []string{"youtube", "localhost"}, CollapseSubdomains: &no,
+		Remove: []string{"vk"}, Exclude: []string{"music"}}
+	in := Input{
+		ManualInclude: []string{"vk", "googlevideo"},
+		Sources:       []FetchedSource{{Source: Source{Name: "s", URL: "http://s"}, Body: "com\ntwitch\nlocalhost\nyoutube.com\n"}},
+	}
+	b, err := Build(g, in, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(b.Entries, " "); got != "youtube googlevideo youtube.com" {
+		t.Fatalf("entries %q", got)
+	}
+	if strings.Join(b.Exclude, " ") != "music" || b.Removed != 1 || b.Dropped != 1 || b.Sources[0].Valid != 1 {
+		t.Fatalf("exclude=%v removed=%d dropped=%d", b.Exclude, b.Removed, b.Dropped)
+	}
+}
+
 func TestCollapse(t *testing.T) {
 	out, removed := Collapse([]string{"api.example.com", "example.com", "cdn.example.com", "other.org", "x.y.other.org", "10.0.0.0/8", "example.co.uk"})
 	want := "example.com other.org 10.0.0.0/8 example.co.uk"
