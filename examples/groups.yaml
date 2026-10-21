@@ -1,0 +1,27 @@
+# Desired state for `awgkeen router plan|apply --desired groups.yaml`.
+#
+# Each group becomes `object-group fqdn <name>` on the router and is bound to
+# its connection with `dns-proxy route object-group <name> <interface> auto`.
+# Only the difference between the router and this file is sent.
+
+groups:
+  - name: awg-main
+    description: "AmneziaWG main tunnel"
+    include:
+      - example.com
+      - api.example.com
+      - 203.0.113.0/24        # CIDRs are accepted since KeeneticOS 5.0 beta 3
+    exclude:
+      - static.example.com
+    routes:
+      - interface: Wireguard0  # auto: true by default
+      - interface: Wireguard1  # failover: used when Wireguard0 is down
+        reject: true           # drop instead of leaking via the default route
+
+  - name: reality
+    include:
+      - example.org
+    routes:
+      - gateway: 192.168.1.2   # a gateway, optionally with `via: ISP`
+
+# prune: true   # also delete groups on the router that are not listed here

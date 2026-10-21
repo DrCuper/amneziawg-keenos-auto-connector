@@ -1,0 +1,28 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+    - errorlint
+    - bodyclose
+    - gosec
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        - G101 # env var *names* are not credentials
+        - G401 # md5 is mandated by the Keenetic auth scheme
+        - G501
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec, bodyclose]
+formatters:
+  enable:
+    - gofmt
+    - goimports
