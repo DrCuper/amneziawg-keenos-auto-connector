@@ -22,6 +22,26 @@ const (
 type Config struct {
 	Router Router `yaml:"router"`
 	Log    Log    `yaml:"log"`
+	// StateDir holds the service's own state: group versions, manual edits,
+	// source cache.
+	StateDir string `yaml:"state_dir"`
+	Sync     Sync   `yaml:"sync"`
+}
+
+// Sync configures domain-group synchronization (stage 2).
+type Sync struct {
+	DomainsFile string `yaml:"domains_file"` // groups + connections + sources
+	Schedule    string `yaml:"schedule"`     // cron: 5 fields, @hourly, @every 6h
+	RunOnStart  *bool  `yaml:"run_on_start"` // serve: sync at startup, default true
+	// MaxShrink blocks a group that shrank by more than this fraction versus
+	// the applied version (0.5 = half); 0 disables the guard.
+	MaxShrink float64 `yaml:"max_shrink"`
+	// OnLimit is "error" or "truncate" when a group exceeds max_entries.
+	OnLimit        string        `yaml:"on_limit"`
+	KeepVersions   int           `yaml:"keep_versions"`
+	SourceTimeout  time.Duration `yaml:"source_timeout"`
+	SourceMaxBytes int64         `yaml:"source_max_bytes"`
+	UserAgent      string        `yaml:"user_agent"`
 }
 
 // Log configures slog.
@@ -71,7 +91,19 @@ func Default() Config {
 			SaveConfig:  &t,
 			MaxEntries:  2000,
 		},
-		Log: Log{Level: "info", Format: "text"},
+		Log:      Log{Level: "info", Format: "text"},
+		StateDir: "/var/lib/awgkeen",
+		Sync: Sync{
+			DomainsFile:    "domains.yaml",
+			Schedule:       "0 */6 * * *",
+			RunOnStart:     &t,
+			MaxShrink:      0.5,
+			OnLimit:        "error",
+			KeepVersions:   10,
+			SourceTimeout:  30 * time.Second,
+			SourceMaxBytes: 10 << 20,
+			UserAgent:      "awgkeen (+https://github.com/DrCuper/amneziawg-keenos-auto-connector)",
+		},
 	}
 }
 
@@ -145,6 +177,22 @@ func (c *Config) Validate() error {
 	}
 	if r.Retries < 0 {
 		errs = append(errs, errors.New("router.retries must be >= 0"))
+	}
+	s := &c.Sync
+	if s.MaxShrink < 0 || s.MaxShrink >= 1 {
+		errs = append(errs, errors.New("sync.max_shrink must be in [0, 1)"))
+	}
+	if s.OnLimit != "error" && s.OnLimit != "truncate" {
+		errs = append(errs, fmt.Errorf("sync.on_limit %q is not supported (error, truncate)", s.OnLimit))
+	}
+	if s.KeepVersions < 1 {
+		errs = append(errs, errors.New("sync.keep_versions must be >= 1"))
+	}
+	if s.SourceTimeout <= 0 {
+		errs = append(errs, errors.New("sync.source_timeout must be positive"))
+	}
+	if s.SourceMaxBytes <= 0 {
+		errs = append(errs, errors.New("sync.source_max_bytes must be positive"))
 	}
 	return errors.Join(errs...)
 }

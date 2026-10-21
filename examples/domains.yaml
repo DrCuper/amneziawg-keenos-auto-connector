@@ -1,0 +1,46 @@
+# Domain groups for `awgkeen sync|serve|groups` (path: sync.domains_file).
+#
+# A connection is a named set of dns-proxy routes; a group is one
+# `object-group fqdn` bound to a connection and filled from its sources.
+# Only the diff between the router and the built group is sent.
+
+connections:
+  awg:
+    description: "AmneziaWG tunnel"
+    routes:
+      - interface: Wireguard0       # auto: true by default
+      - interface: Wireguard1       # failover
+        reject: true                # drop instead of leaking via the default route
+  reality:
+    routes:
+      - gateway: 192.168.1.2        # a gateway, optionally with `via: ISP`
+
+groups:
+  - name: awg-main
+    description: "Community lists via AWG"
+    connection: awg
+    sources:
+      # Any http(s) text list. Formats are detected per line: plain domains,
+      # *.wildcards, hosts files, dnsmasq server=/ipset=/nftset=, v2fly
+      # domain:/full:, Clash DOMAIN-SUFFIX/DOMAIN. Set `format:` to force one.
+      - name: community
+        url: https://raw.githubusercontent.com/example/domain-lists/main/domains.lst
+      - name: local
+        file: lists/extra.txt       # relative to this file
+        format: plain
+    include:                        # always present, highest priority
+      - example.com
+    remove:                         # never sent to the router, even if a source lists it
+      - tracker.example.com
+    exclude:                        # Keenetic `exclude`: carve a subdomain out of a wider entry
+      - static.example.com
+    # max_entries: 1500             # per-group override of router.max_entries
+    # collapse_subdomains: true     # drop api.example.com when example.com is listed
+
+  - name: reality
+    connection: reality
+    sources:
+      - url: https://example.org/clash-rules.txt
+        format: clash
+
+# prune: true   # delete groups on the router that are not listed here

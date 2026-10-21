@@ -38,8 +38,12 @@
 ## Архитектура
 
 ```
-cmd/awgkeen/            CLI‑точка входа (подкоманды router ..., позже sync, serve)
+cmd/awgkeen/            CLI‑точка входа (router ..., sync, serve, groups ...)
 internal/config/        YAML‑конфиг + переменные окружения для секретов
+internal/domains/       domains.yaml (подключения, группы, источники), нормализация, сборка
+internal/source/        загрузка списков (HTTP с кэшем, файлы), парсер форматов
+internal/store/         состояние: версии групп, applied/pinned, ручные правки, кэш
+internal/syncer/        оркестратор синхронизации, откат, планировщик cron
 internal/router/        Доменная модель роутера: State, Desired*, Plan, Client
 internal/router/rci/    Транспорт RCI (HTTP, challenge‑response auth)
 internal/router/sshx/   Транспорт SSH (CLI через exec)

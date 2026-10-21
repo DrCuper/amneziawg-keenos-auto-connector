@@ -81,3 +81,21 @@ func TestRedacted(t *testing.T) {
 		t.Error("redaction wrong")
 	}
 }
+
+func TestSyncDefaultsAndValidation(t *testing.T) {
+	t.Setenv(EnvRouterPassword, "pw")
+	cfg := Default()
+	if err := Parse([]byte("router:\n  url: http://r\nsync:\n  schedule: '@hourly'\n  on_limit: truncate\n"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.Schedule != "@hourly" || cfg.Sync.OnLimit != "truncate" || cfg.Sync.KeepVersions != 10 || cfg.Sync.MaxShrink != 0.5 || *cfg.Sync.RunOnStart != true || cfg.StateDir == "" {
+		t.Errorf("unexpected sync config %+v", cfg.Sync)
+	}
+	for _, bad := range []string{"  max_shrink: 1.5\n", "  on_limit: drop\n", "  keep_versions: 0\n", "  source_timeout: 0s\n"} {
+		cfg := Default()
+		err := Parse([]byte("router:\n  url: http://r\nsync:\n"+bad), &cfg)
+		if err == nil || !strings.Contains(err.Error(), "sync.") {
+			t.Errorf("%q: want sync validation error, got %v", bad, err)
+		}
+	}
+}
