@@ -2,7 +2,10 @@
 # environment variables instead:
 #   AWGKEEN_ROUTER_PASSWORD   router password (rci and ssh)
 #   AWGKEEN_ROUTER_KEY_FILE   SSH private key path (ssh)
-# Environment values take precedence over the file.
+#   AWGKEEN_TELEGRAM_BOT_TOKEN, AWGKEEN_TELEGRAM_CHAT_ID   Telegram channel
+#   AWGKEEN_WEBHOOK_URL, AWGKEEN_WEBHOOK_SECRET            first webhook
+# Environment values take precedence over *_file options, which take
+# precedence over values written in this file.
 
 router:
   transport: rci                # rci | ssh
@@ -36,6 +39,45 @@ sync:
   source_timeout: 30s           # per URL download
   source_max_bytes: 10485760    # 10 MiB per list
   # user_agent: awgkeen
+
+# Change journal: every sync, rollback, manual edit and `router apply`
+# (dry-run included). `awgkeen journal list|show|prune`.
+journal:
+  enabled: true
+  # file: /var/lib/awgkeen/journal.jsonl   # default: <state_dir>/journal.jsonl
+  keep_days: 90                 # prune entries older than this (0 = keep)
+  max_entries: 5000             # and keep at most this many (0 = unlimited)
+  max_changes: 500              # diff lines stored per entry
+
+# Alerts: router_unreachable, sync_failed, awg_down:<check>. One message per
+# incident, reminders every repeat_interval, "resolved" on recovery.
+notify:
+  telegram:
+    # bot_token: ""             # or AWGKEEN_TELEGRAM_BOT_TOKEN / bot_token_file
+    # bot_token_file: /run/secrets/telegram_token
+    # chat_id: "123456789"      # or AWGKEEN_TELEGRAM_CHAT_ID
+  webhooks: []
+  #  - name: ops
+  #    url: https://example.com/hooks/awgkeen     # or AWGKEEN_WEBHOOK_URL / url_file
+  #    secret_file: /run/secrets/webhook_secret   # HMAC-SHA256 -> X-Awgkeen-Signature
+  #    headers: {X-Team: net}
+  repeat_interval: 6h           # reminder for a still-active alert (0 = never)
+  fail_threshold: 1             # consecutive failures before an alert fires
+  on_apply: false               # also send an info message after a sync changed the router
+  timeout: 10s                  # per delivery attempt
+  retries: 2                    # on network errors, 5xx and 429
+  # host: home-router           # label in messages (default: hostname)
+
+# `awgkeen serve`: periodic checks feeding the alerts above. `awgkeen health`
+# runs them once.
+health:
+  interval: 5m                  # 0 = off
+  router: true                  # read running-config -> router_unreachable
+  checks: []
+  #  - name: awg                # alert awg_down:awg while the command fails
+  #    command: ["/usr/local/bin/check-awg", "Wireguard0"]   # argv, no shell; exit 0 = healthy
+  #    timeout: 30s
+  #    alert: awg_down
 
 log:
   level: info                   # debug | info | warn | error

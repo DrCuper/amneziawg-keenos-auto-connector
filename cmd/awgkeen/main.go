@@ -1,5 +1,6 @@
 // Command awgkeen manages domain-based routing and AmneziaWG connections on
-// Keenetic routers: `router` (stage 1), `sync`, `serve` and `groups` (stage 2).
+// Keenetic routers: `router` (stage 1), `sync`, `serve` and `groups` (stage 2),
+// `journal`, `notify` and `health` (stage 3).
 package main
 
 import (
@@ -10,10 +11,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/app"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
 )
 
 func main() {
@@ -34,7 +37,8 @@ func newRoot() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.yaml", "path to YAML config")
-	root.AddCommand(newRouterCmd(&cfgPath), newSyncCmd(&cfgPath), newServeCmd(&cfgPath), newGroupsCmd(&cfgPath))
+	root.AddCommand(newRouterCmd(&cfgPath), newSyncCmd(&cfgPath), newServeCmd(&cfgPath), newGroupsCmd(&cfgPath),
+		newJournalCmd(&cfgPath), newNotifyCmd(&cfgPath), newHealthCmd(&cfgPath))
 	return root
 }
 
@@ -106,7 +110,9 @@ func newRouterCmd(cfgPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			started := time.Now()
 			res, err := a.Client.Apply(c.Context(), want, dryRun)
+			a.Record(journal.FromApply(started, time.Since(started), dryRun, res, err, a.Config.Journal.MaxChanges))
 			if res != nil && res.Plan != nil {
 				fmt.Fprint(c.OutOrStdout(), res.Plan.String())
 			}

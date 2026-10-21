@@ -99,3 +99,81 @@ func TestSyncDefaultsAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestNotifySecretsPrecedence(t *testing.T) {
+	t.Setenv(EnvRouterPassword, "pw")
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "tg")
+	_ = os.WriteFile(tokenFile, []byte("file-token\n"), 0o600)
+	yaml := "router:\n  url: http://r\nnotify:\n  telegram:\n    bot_token: yaml-token\n    bot_token_file: " + tokenFile + "\n    chat_id: '42'\n"
+
+	t.Setenv(EnvTelegramBotToken, "")
+	cfg := Default()
+	if err := Parse([]byte(yaml), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Telegram.BotToken != "file-token" {
+		t.Errorf("file must win over YAML: %q", cfg.Notify.Telegram.BotToken)
+	}
+	t.Setenv(EnvTelegramBotToken, "env-token")
+	cfg = Default()
+	if err := Parse([]byte(yaml), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.Telegram.BotToken != "env-token" || !cfg.Notify.Telegram.Enabled() {
+		t.Errorf("env must win: %q", cfg.Notify.Telegram.BotToken)
+	}
+	if r := cfg.Redacted(); r.Notify.Telegram.BotToken != "***" || cfg.Notify.Telegram.BotToken != "env-token" {
+		t.Error("token redaction wrong")
+	}
+}
+
+func TestWebhookFromEnv(t *testing.T) {
+	t.Setenv(EnvRouterPassword, "pw")
+	t.Setenv(EnvWebhookURL, "https://hooks.example/abc")
+	t.Setenv(EnvWebhookSecret, "s")
+	cfg := Default()
+	if err := Parse([]byte("router:\n  url: http://r\n"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Notify.Webhooks) != 1 || cfg.Notify.Webhooks[0].URL != "https://hooks.example/abc" || cfg.Notify.Webhooks[0].Secret != "s" {
+		t.Errorf("webhooks %+v", cfg.Notify.Webhooks)
+	}
+}
+
+func TestStage3Defaults(t *testing.T) {
+	t.Setenv(EnvRouterPassword, "pw")
+	cfg := Default()
+	if err := Parse([]byte("router:\n  url: http://r\n"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Journal.IsEnabled() || cfg.Journal.KeepDays != 90 || cfg.Notify.RepeatInterval != 6*time.Hour || cfg.Notify.FailThreshold != 1 ||
+		cfg.Health.Interval != 5*time.Minute || !cfg.Health.RouterEnabled() || cfg.Notify.Telegram.Enabled() {
+		t.Errorf("defaults: %+v %+v %+v", cfg.Journal, cfg.Notify, cfg.Health)
+	}
+}
+
+func TestStage3Validation(t *testing.T) {
+	t.Setenv(EnvRouterPassword, "pw")
+	t.Setenv(EnvTelegramBotToken, "")
+	t.Setenv(EnvTelegramChatID, "")
+	t.Setenv(EnvWebhookURL, "")
+	for _, c := range []struct{ yaml, want string }{
+		{"notify:\n  telegram:\n    bot_token: x\n", "chat_id"},
+		{"notify:\n  webhooks:\n    - url: ftp://secret-host/x\n", "webhooks[0].url"},
+		{"notify:\n  fail_threshold: 0\n", "fail_threshold"},
+		{"health:\n  checks:\n    - name: awg\n", "command is required"},
+		{"health:\n  checks:\n    - {name: awg, command: [x]}\n    - {name: awg, command: [y]}\n", "used twice"},
+		{"health:\n  checks:\n    - {name: 'a b', command: [x]}\n", "name"},
+		{"health:\n  checks:\n    - {name: a, alert: AWG-Down, command: [x]}\n", "alert"},
+	} {
+		cfg := Default()
+		err := Parse([]byte("router:\n  url: http://r\n"+c.yaml), &cfg)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q: want %q, got %v", c.yaml, c.want, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "secret-host") {
+			t.Errorf("webhook URL leaked in error: %v", err)
+		}
+	}
+}

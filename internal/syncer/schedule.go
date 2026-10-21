@@ -30,8 +30,9 @@ type Scheduler struct {
 	Schedule   string
 	RunOnStart bool
 	Logger     *slog.Logger
-	// Run is overridable for tests; defaults to Syncer.Run with no options.
-	Run func(ctx context.Context) error
+	// Run is overridable for tests; defaults to Syncer.Run with only the
+	// trigger set.
+	Run func(ctx context.Context, trigger string) error
 
 	mu      sync.Mutex
 	running bool
@@ -53,9 +54,13 @@ func (s *Scheduler) log() *slog.Logger {
 	return slog.Default()
 }
 
-// RunNow performs one run unless another is in flight (then it is skipped and
-// false is returned).
+// RunNow performs one scheduled run unless another is in flight (then it is
+// skipped and false is returned).
 func (s *Scheduler) RunNow(ctx context.Context) bool {
+	return s.runOnce(ctx, TriggerSchedule)
+}
+
+func (s *Scheduler) runOnce(ctx context.Context, trigger string) bool {
 	s.mu.Lock()
 	if s.running {
 		s.skipped++
@@ -71,13 +76,13 @@ func (s *Scheduler) RunNow(ctx context.Context) bool {
 
 	run := s.Run
 	if run == nil {
-		run = func(ctx context.Context) error {
-			_, err := s.Syncer.Run(ctx, Options{})
+		run = func(ctx context.Context, trigger string) error {
+			_, err := s.Syncer.Run(ctx, Options{Trigger: trigger})
 			return err
 		}
 	}
 	start := time.Now()
-	if err := run(ctx); err != nil {
+	if err := run(ctx, trigger); err != nil {
 		s.log().Error("sync: run failed", "err", err, "took", time.Since(start).Round(time.Millisecond))
 		return true
 	}
@@ -93,7 +98,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		return err
 	}
 	if s.RunOnStart {
-		s.RunNow(ctx)
+		s.runOnce(ctx, TriggerStartup)
 	}
 	c := cron.New(cron.WithLogger(cron.DiscardLogger))
 	c.Schedule(sched, cron.FuncJob(func() { s.RunNow(ctx) }))

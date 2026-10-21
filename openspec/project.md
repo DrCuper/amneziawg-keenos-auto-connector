@@ -43,7 +43,10 @@ internal/config/        YAML‑конфиг + переменные окруже�
 internal/domains/       domains.yaml (подключения, группы, источники), нормализация, сборка
 internal/source/        загрузка списков (HTTP с кэшем, файлы), парсер форматов
 internal/store/         состояние: версии групп, applied/pinned, ручные правки, кэш
-internal/syncer/        оркестратор синхронизации, откат, планировщик cron
+internal/syncer/        оркестратор синхронизации, откат, планировщик cron, Observer
+internal/journal/       журнал изменений (JSON Lines), запросы и ротация
+internal/notify/        каналы Telegram/webhook, алерты с подавлением повторов
+internal/health/        проверки здоровья (роутер, хуки) и монитор для serve
 internal/router/        Доменная модель роутера: State, Desired*, Plan, Client
 internal/router/rci/    Транспорт RCI (HTTP, challenge‑response auth)
 internal/router/sshx/   Транспорт SSH (CLI через exec)
@@ -64,8 +67,11 @@ openspec/               Спецификации и change‑предложен�
 * **Идемпотентность.** План строится из разницы «текущее → желаемое»;
   пустой план ничего не делает и не сохраняет конфиг.
 * **Секреты вне репозитория.** Пароль/ключ берутся из env
-  (`AWGKEEN_ROUTER_PASSWORD`, `AWGKEEN_ROUTER_KEY_FILE`) или из файла,
-  на который ссылается конфиг; в YAML их класть можно, но не нужно.
+  (`AWGKEEN_ROUTER_PASSWORD`, `AWGKEEN_ROUTER_KEY_FILE`,
+  `AWGKEEN_TELEGRAM_BOT_TOKEN`, `AWGKEEN_WEBHOOK_SECRET` …) или из файла,
+  на который ссылается конфиг (`*_file`); в YAML их класть можно, но не нужно.
+* **Наблюдатели.** `syncer` сообщает о каждой операции через `Observer`;
+  журнал и уведомления подключаются в `internal/app`, не меняя `syncer`.
 
 ## Конвенции
 

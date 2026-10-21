@@ -376,3 +376,37 @@ func TestLimitError(t *testing.T) {
 		t.Fatal("group b (2 entries) should still be applied")
 	}
 }
+
+func TestObserversSeeEveryOperation(t *testing.T) {
+	e := newEnv(t, "")
+	var got []string
+	e.s.Observers = []Observer{ObserverFunc(func(_ context.Context, r *Report) {
+		s := r.Kind + "/" + r.Trigger
+		if r.DryRun {
+			s += "/dry"
+		}
+		if r.Manual != nil {
+			s += "/" + r.Manual.Op
+		}
+		got = append(got, s)
+	})}
+	ctx := context.Background()
+	if _, err := e.s.Run(ctx, Options{Trigger: TriggerSchedule}); err != nil {
+		t.Fatal(err)
+	}
+	e.setList(t, "a.txt", "a1.com\na3.com\n")
+	if _, err := e.s.Run(ctx, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.Rollback(ctx, "a", 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.AddManual("a", []string{"m.com"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.s.ClearManual("a")
+	want := "sync/schedule sync/cli rollback/cli/dry manual/cli/add manual/cli/clear"
+	if strings.Join(got, " ") != want {
+		t.Errorf("got  %s\nwant %s", strings.Join(got, " "), want)
+	}
+}

@@ -7,8 +7,9 @@
 сервиса и план этапов — в [`openspec/project.md`](openspec/project.md),
 спецификации — в `openspec/specs/`, предложения — в `openspec/changes/`.
 
-**Статус:** этап 2 — группы доменов, дифф‑синхронизация и cron
-(`openspec/changes/add-domain-groups-sync`); этап 1 (клиент роутера) заархивирован в `openspec/specs/router-client`.
+**Статус:** этап 3 — журнал изменений и уведомления
+(`openspec/changes/add-journal-notify`); этапы 1–2 (клиент роутера, группы и
+синхронизация) заархивированы в `openspec/specs/`.
 
 ## Что умеет сейчас
 
@@ -34,6 +35,16 @@
 * **Защиты**: упавший источник не опустошает группу; резкое сокращение
   (`max_shrink`) блокируется без `--force`; dry‑run не пишет ни на роутер, ни в состояние.
 * **Расписание**: `awgkeen serve` синхронизирует по cron, `awgkeen sync` — вручную.
+* **Журнал изменений**: каждая синхронизация, откат, ручная правка и
+  `router apply` (в том числе dry‑run) — запись в `state_dir/journal.jsonl`
+  с результатом, версиями групп, `+N/-M`, числом команд, бэкапом и диффом;
+  `awgkeen journal list|show` с фильтрами.
+* **Уведомления** в Telegram и webhook (JSON, подпись HMAC‑SHA256): роутер
+  недоступен, синхронизация не удалась, AWG упал. Одно сообщение на инцидент,
+  напоминание раз в `repeat_interval`, сообщение о восстановлении; состояние
+  алертов общее для демона и ручных запусков.
+* **Проверки здоровья** в `serve`: доступность роутера и хуки‑команды
+  (`health.checks`) — например, проверка handshake AWG своим скриптом.
 
 ## Установка
 
@@ -98,6 +109,16 @@ awgkeen groups clear awg-main
 awgkeen groups rollback awg-main [--to 3] # закрепить на прошлой версии и применить
 awgkeen groups unpin awg-main             # снова собирать из источников
 
+awgkeen journal list                      # последние 20 операций
+awgkeen journal list -g awg-main --since 7d --real
+awgkeen journal list --status failed --json
+awgkeen journal show 42                   # запись целиком, с диффом
+awgkeen journal prune                     # ротация по keep_days / max_entries
+
+awgkeen notify test                       # тестовое сообщение во все каналы
+awgkeen notify status                     # активные алерты
+awgkeen health [--notify]                 # разовый прогон проверок
+
 awgkeen router show                       # группы и маршруты на роутере
 awgkeen router show --raw                 # весь running-config
 awgkeen router plan  -d groups.yaml       # что изменится (роутер не трогается)
@@ -137,6 +158,43 @@ group awg-main:
 applied 15 command(s), saved=true, backup=/var/lib/awgkeen/backups/running-config-20261021-120000.txt
 ```
 
+Пример `journal list`:
+
+```
+ID  TIME                 KIND    TRIGGER   MODE     STATUS  GROUPS                  SUMMARY
+14  2026-10-21 12:00:03  sync    schedule  real     ok      awg-main v7 +12/-3      15 command(s) applied, saved
+13  2026-10-21 11:58:40  manual  cli       real     ok      awg-main                add site.example
+12  2026-10-21 06:00:02  sync    schedule  real     failed  awg-main v6             apply: running-config failed after 4 attempt(s): …
+```
+
+## Уведомления
+
+Каналы и секреты — в секции `notify` (см. [`config.example.yaml`](config.example.yaml)):
+
+```sh
+export AWGKEEN_TELEGRAM_BOT_TOKEN='123456:ABC...'   # токен бота от @BotFather
+export AWGKEEN_TELEGRAM_CHAT_ID='123456789'
+export AWGKEEN_WEBHOOK_URL='https://example.com/hooks/awgkeen'
+export AWGKEEN_WEBHOOK_SECRET='...'                 # подпись X-Awgkeen-Signature: sha256=<hmac>
+awgkeen notify test
+```
+
+| Алерт | Когда срабатывает | Когда снимается |
+|---|---|---|
+| `router_unreachable` | роутер не ответил после всех ретраев (sync или проверка `health`) | роутер ответил |
+| `sync_failed` | роутер ответил, но синхронизация не удалась (отказ команды, верификация, ошибка группы) | успешная синхронизация |
+| `awg_down:<check>` | хук `health.checks` вернул ненулевой код или превысил таймаут | хук вернул 0 |
+
+Dry‑run и ручные правки алерты не меняют. Тело webhook:
+
+```json
+{"event":"firing","alert":"router_unreachable","key":"router_unreachable","title":"Router unreachable",
+ "text":"apply: running-config failed after 4 attempt(s): …","since":"2026-10-21T06:00:02Z","failures":3,
+ "time":"2026-10-21T07:00:02Z","host":"nas"}
+```
+
+`event`: `firing`, `reminder`, `resolved`, `info` (при `on_apply: true`), `test`.
+
 ## Как это работает
 
 Оба транспорта исполняют **одни и те же CLI‑строки** KeeneticOS
@@ -158,7 +216,10 @@ internal/config/      YAML + env
 internal/domains/     domains.yaml, нормализация, сборка группы
 internal/source/      загрузка списков (HTTP с кэшем, файлы) и парсер форматов
 internal/store/       файловое состояние: версии, applied/pinned, ручные правки, кэш
-internal/syncer/      оркестратор синхронизации, откат, планировщик cron
+internal/syncer/      оркестратор синхронизации, откат, планировщик cron, наблюдатели
+internal/journal/     журнал изменений (JSON Lines), запросы, ротация
+internal/notify/      Telegram/webhook, алерты с подавлением повторов и восстановлением
+internal/health/      проверки здоровья: роутер, хуки-команды; монитор для serve
 internal/router/      модель, план (дифф), Client: lock → read → backup → plan → apply → verify → save
 internal/router/cli/  парсер running-config и генерация команд
 internal/router/rci/  транспорт RCI
@@ -179,5 +240,4 @@ openspec validate --strict
 
 ## Дорожная карта
 
-См. таблицу этапов в [`openspec/project.md`](openspec/project.md): журнал и
-уведомления → импорт AWG‑конфига → веб‑интерфейс → управление сервером и пирами.
+См. таблицу этапов в [`openspec/project.md`](openspec/project.md): импорт AWG‑конфига → веб‑интерфейс → управление сервером и пирами.

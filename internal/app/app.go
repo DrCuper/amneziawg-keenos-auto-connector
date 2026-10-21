@@ -14,6 +14,9 @@ import (
 
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/config"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/domains"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/health"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/notify"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/cli"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/rci"
@@ -32,6 +35,9 @@ type App struct {
 	Transport router.Transport
 	Client    *router.Client
 	Logger    *slog.Logger
+
+	journal *journal.Journal
+	alerter *notify.Alerter
 }
 
 // New loads the config file and builds the router client.
@@ -94,13 +100,19 @@ func (a *App) OpenStore() (*store.File, error) {
 }
 
 // NewSyncer wires store, fetcher and router client for `sync`, `serve` and
-// `groups`. The domains file path is resolved relative to the config file's
-// directory when not absolute.
+// `groups`, with the journal and the alerter as observers. The domains file
+// path is resolved relative to the config file's directory when not absolute.
 func (a *App) NewSyncer(st store.Store) *syncer.Syncer {
 	sc := a.Config.Sync
+	var observers []syncer.Observer
+	if j := a.Journal(); j != nil {
+		observers = append(observers, &journal.Observer{J: j, MaxChanges: a.Config.Journal.MaxChanges})
+	}
+	observers = append(observers, a.Alerter())
 	return &syncer.Syncer{
-		SpecPath: a.DomainsFile(),
-		Store:    st,
+		Observers: observers,
+		SpecPath:  a.DomainsFile(),
+		Store:     st,
 		Fetcher: &source.Fetcher{
 			HTTP:      &http.Client{Timeout: sc.SourceTimeout},
 			Cache:     st,
@@ -113,6 +125,80 @@ func (a *App) NewSyncer(st store.Store) *syncer.Syncer {
 		KeepVersions: sc.KeepVersions,
 		Logger:       a.Logger,
 	}
+}
+
+// Journal opens the change journal once; nil when it is disabled or cannot
+// be opened (a warning is logged: the journal must not block syncs).
+func (a *App) Journal() *journal.Journal {
+	jc := a.Config.Journal
+	if a.journal != nil || !jc.IsEnabled() {
+		return a.journal
+	}
+	path := jc.File
+	if path == "" {
+		path = filepath.Join(a.Config.StateDir, "journal.jsonl")
+	}
+	j, err := journal.Open(path)
+	if err != nil {
+		a.Logger.Warn("journal disabled", "err", err)
+		return nil
+	}
+	j.KeepDays, j.MaxEntries, j.Logger = jc.KeepDays, jc.MaxEntries, a.Logger
+	a.journal = j
+	return j
+}
+
+// Record appends an entry built outside the syncer (`router apply`).
+func (a *App) Record(e *journal.Entry) {
+	if j := a.Journal(); j != nil {
+		if _, err := j.Append(e); err != nil {
+			a.Logger.Warn("journal: cannot record operation", "kind", e.Kind, "err", err)
+		}
+	}
+}
+
+// Alerter builds the alerter with the configured channels once. Its state is
+// <state_dir>/alerts.json, shared with other processes.
+func (a *App) Alerter() *notify.Alerter {
+	if a.alerter != nil {
+		return a.alerter
+	}
+	n := a.Config.Notify
+	ho := notify.HTTPOptions{Client: &http.Client{}, Timeout: n.Timeout, Retries: n.Retries}
+	var chans []notify.Channel
+	if n.Telegram.Enabled() {
+		chans = append(chans, &notify.Telegram{Token: n.Telegram.BotToken, ChatID: n.Telegram.ChatID, APIURL: n.Telegram.APIURL, HTTPOptions: ho})
+	}
+	for _, w := range n.Webhooks {
+		chans = append(chans, &notify.Webhook{Label: w.Name, URL: w.URL, Secret: w.Secret, Headers: w.Headers, HTTPOptions: ho})
+	}
+	host := n.Host
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+	a.alerter = &notify.Alerter{
+		Channels:       chans,
+		StatePath:      filepath.Join(a.Config.StateDir, "alerts.json"),
+		FailThreshold:  n.FailThreshold,
+		RepeatInterval: n.RepeatInterval,
+		OnApply:        n.OnApply,
+		Host:           host,
+		Logger:         a.Logger,
+	}
+	return a.alerter
+}
+
+// HealthChecks returns the configured checks: the router first, then hooks.
+func (a *App) HealthChecks() []health.Check {
+	h := a.Config.Health
+	var out []health.Check
+	if h.RouterEnabled() {
+		out = append(out, health.RouterCheck{Router: a.Client})
+	}
+	for _, c := range h.Checks {
+		out = append(out, health.CommandCheck{Name: c.Name, Alert: c.Alert, Command: c.Command, Timeout: c.Timeout})
+	}
+	return out
 }
 
 // DomainsFile returns the absolute path of sync.domains_file.
