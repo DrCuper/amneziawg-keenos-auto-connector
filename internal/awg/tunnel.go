@@ -41,6 +41,8 @@ type Tunnel struct {
 	AllowedIPs []string `yaml:"allowed_ips"`
 	Enabled    *bool    `yaml:"enabled"` // interface up, default true
 	Check      Check    `yaml:"check"`
+	// Imported marks a key added with `awg import` (kept in state_dir).
+	Imported bool `yaml:"-"`
 }
 
 // Check configures the built-in health check of a tunnel.

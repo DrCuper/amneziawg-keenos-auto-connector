@@ -124,10 +124,13 @@ type Updater interface {
 
 // Monitor runs the checks every Interval until ctx is done.
 type Monitor struct {
-	Checks   []Check
-	Interval time.Duration
-	Alerts   Updater
-	Logger   *slog.Logger
+	Checks []Check
+	// ChecksFunc, if set, replaces Checks and is called every round, so
+	// that tunnels imported at runtime are checked too.
+	ChecksFunc func() []Check
+	Interval   time.Duration
+	Alerts     Updater
+	Logger     *slog.Logger
 	// OnResults, if set, receives every round's results (API status page,
 	// metrics).
 	OnResults func([]Result)
@@ -136,7 +139,7 @@ type Monitor struct {
 // Run blocks until ctx is cancelled. The first round runs after one interval,
 // so that startup is not slowed down and the initial sync goes first.
 func (m *Monitor) Run(ctx context.Context) {
-	if m.Interval <= 0 || len(m.Checks) == 0 {
+	if m.Interval <= 0 || (len(m.Checks) == 0 && m.ChecksFunc == nil) {
 		return
 	}
 	log := m.Logger
@@ -152,7 +155,11 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-t.C:
 		}
 		var signals []notify.Signal
-		results := RunAll(ctx, m.Checks)
+		checks := m.Checks
+		if m.ChecksFunc != nil {
+			checks = m.ChecksFunc()
+		}
+		results := RunAll(ctx, checks)
 		if m.OnResults != nil && ctx.Err() == nil {
 			m.OnResults(results)
 		}

@@ -460,7 +460,8 @@ type TunnelInfo struct {
 	Auto      bool      `json:"auto_interface"`
 	Enabled   bool      `json:"enabled"`
 	AppliedAt time.Time `json:"applied_at,omitzero"`
-	Orphan    bool      `json:"orphan,omitempty"` // recorded but no longer configured
+	Orphan    bool      `json:"orphan,omitempty"`   // recorded but no longer configured
+	Imported  bool      `json:"imported,omitempty"` // key added with awg import / the API
 }
 
 func (s *Server) tunnelsConfigured(w http.ResponseWriter) bool {
@@ -483,9 +484,9 @@ func (s *Server) tunnels(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	seen := map[string]bool{}
-	for _, t := range s.Tunnels.Tunnels {
+	for _, t := range s.Tunnels.List() {
 		seen[t.Name] = true
-		ti := TunnelInfo{Name: t.Name, Interface: t.Interface, Auto: t.AutoInterface(), Enabled: t.IsUp(), AppliedAt: recs[t.Name].AppliedAt}
+		ti := TunnelInfo{Name: t.Name, Interface: t.Interface, Auto: t.AutoInterface(), Enabled: t.IsUp(), AppliedAt: recs[t.Name].AppliedAt, Imported: t.Imported}
 		if ti.Auto {
 			ti.Interface = recs[t.Name].Interface
 		}
@@ -600,6 +601,54 @@ func (s *Server) tunnelApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, out)
 }
 
+type tunnelImportRequest struct {
+	Name    string `json:"name"`
+	Key     string `json:"key"`   // .conf text or vpn:// key
+	Apply   *bool  `json:"apply"` // default true
+	Replace bool   `json:"replace"`
+}
+
+// tunnelImport stores a client key of any AmneziaWG server and imports it.
+func (s *Server) tunnelImport(w http.ResponseWriter, r *http.Request) {
+	if s.ImportKey == nil {
+		writeError(w, http.StatusNotFound, errors.New("key import is not available"))
+		return
+	}
+	var req tunnelImportRequest
+	if err := decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.ImportKey(r.Context(), syncer.TriggerAPI, req.Name, []byte(req.Key), req.Apply == nil || *req.Apply, req.Replace)
+	s.tunnelOpResult(w, res, err)
+}
+
+// tunnelForget removes an imported tunnel from the router and its key.
+func (s *Server) tunnelForget(w http.ResponseWriter, r *http.Request) {
+	if s.ForgetKey == nil {
+		writeError(w, http.StatusNotFound, errors.New("key import is not available"))
+		return
+	}
+	res, err := s.ForgetKey(r.Context(), syncer.TriggerAPI, r.PathValue("name"))
+	s.tunnelOpResult(w, res, err)
+}
+
+func (s *Server) tunnelOpResult(w http.ResponseWriter, res *awg.Result, err error) {
+	out := TunnelApplyResult{OpResult: OpResult{OK: err == nil}}
+	if res != nil {
+		out.Items = res.Items
+		if res.Apply != nil && res.Apply.Plan != nil {
+			out.Plan = res.Apply.Plan.String()
+		}
+	}
+	code := http.StatusOK
+	if err != nil {
+		out.Error = err.Error()
+		code = http.StatusUnprocessableEntity
+	}
+	writeJSON(w, code, out)
+}
+
 // Status is GET /status: a one-call overview for the UI.
 type Status struct {
 	Version  string           `json:"version"`
@@ -618,7 +667,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		st.Groups = len(sp.Groups)
 	}
 	if s.Tunnels != nil {
-		st.Tunnels = len(s.Tunnels.Tunnels)
+		st.Tunnels = len(s.Tunnels.List())
 	}
 	if s.Servers != nil {
 		st.Servers = len(s.Servers.ServerNames())

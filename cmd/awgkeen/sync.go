@@ -118,7 +118,7 @@ func newServeCmd(cfgPath *string) *cobra.Command {
 			defer wg.Wait()
 			defer cancel() // runs before wg.Wait
 			var last lastResults
-			mon := &health.Monitor{Checks: a.HealthChecks(), Interval: a.Config.Health.Interval, Alerts: a.Alerter(), Logger: a.Logger, OnResults: last.set}
+			mon := &health.Monitor{ChecksFunc: a.HealthChecks, Interval: a.Config.Health.Interval, Alerts: a.Alerter(), Logger: a.Logger, OnResults: last.set}
 			wg.Add(2)
 			go func() { defer wg.Done(); mon.Run(ctx) }()
 			go func() { defer wg.Done(); prunePeriodically(ctx, a) }()

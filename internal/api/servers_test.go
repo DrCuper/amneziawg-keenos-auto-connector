@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/remote"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/server"
 )
@@ -145,4 +146,29 @@ func TestServerEndpoints(t *testing.T) {
 		t.Errorf("busy deploy %d", code)
 	}
 	e.ops.Unlock()
+}
+
+func TestTunnelImportEndpoints(t *testing.T) {
+	e := newEnv(t)
+	var got []string
+	e.srv.ImportKey = func(_ context.Context, trigger, name string, key []byte, apply, replace bool) (*awg.Result, error) {
+		got = append(got, fmt.Sprintf("%s %s %v %v %v", trigger, name, apply, replace, strings.HasPrefix(string(key), "vpn://")))
+		return &awg.Result{Items: []awg.Item{{Tunnel: name, Interface: "Wireguard1"}}}, nil
+	}
+	e.srv.ForgetKey = func(_ context.Context, _, name string) (*awg.Result, error) {
+		return nil, fmt.Errorf("awg tunnel %q is not an imported key", name)
+	}
+	if code, _ := e.do(t, "POST", "/api/v1/tunnels/import", readToken, map[string]any{"name": "nl", "key": "vpn://x"}); code != http.StatusForbidden {
+		t.Errorf("read token %d", code)
+	}
+	code, body := e.do(t, "POST", "/api/v1/tunnels/import", adminToken, map[string]any{"name": "nl", "key": "vpn://x"})
+	if code != 200 || !strings.Contains(string(body), "Wireguard1") || len(got) != 1 || got[0] != "api nl true false true" {
+		t.Fatalf("import %d %s %v", code, body, got)
+	}
+	if code, _ = e.do(t, "POST", "/api/v1/tunnels/import", adminToken, map[string]any{"name": "nl", "key": "x", "apply": false, "replace": true}); code != 200 || got[1] != "api nl false true false" {
+		t.Errorf("import options %v", got)
+	}
+	if code, body = e.do(t, "DELETE", "/api/v1/tunnels/main", adminToken, nil); code != http.StatusUnprocessableEntity {
+		t.Errorf("forget %d %s", code, body)
+	}
 }

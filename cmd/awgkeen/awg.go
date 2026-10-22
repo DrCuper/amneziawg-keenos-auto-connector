@@ -56,7 +56,7 @@ func newAWGCmd(cfgPath *string) *cobra.Command {
 			tw := tabwriter.NewWriter(c.OutOrStdout(), 0, 8, 2, ' ', 0)
 			fmt.Fprintln(tw, "TUNNEL\tINTERFACE\tCONFIG\tAPPLIED")
 			seen := map[string]bool{}
-			for _, t := range m.Tunnels {
+			for _, t := range m.List() {
 				seen[t.Name] = true
 				r := recs[t.Name]
 				iface := t.Interface
@@ -67,7 +67,10 @@ func newAWGCmd(cfgPath *string) *cobra.Command {
 					}
 				}
 				src := t.ConfFile
-				if src == "" {
+				switch {
+				case t.Imported:
+					src = "(imported key)"
+				case src == "":
 					src = "(inline)"
 				}
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", t.Name, iface, src, appliedAt(r))
@@ -109,7 +112,7 @@ func newAWGCmd(cfgPath *string) *cobra.Command {
 	var rmDry bool
 	remove := &cobra.Command{
 		Use:   "remove TUNNEL",
-		Short: "Delete the tunnel's interface from the router (only one created by awgkeen)",
+		Short: "Delete the tunnel's interface from the router (only one created by awgkeen); an imported key is forgotten too",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			a, err := app.New(*cfgPath)
@@ -117,6 +120,16 @@ func newAWGCmd(cfgPath *string) *cobra.Command {
 				return err
 			}
 			defer func() { _ = a.Close() }()
+			if t, ok := a.Tunnels().Tunnel(args[0]); ok && t.Imported && !rmDry {
+				res, err := a.ForgetTunnel(c.Context(), syncer.TriggerCLI, args[0])
+				if err == nil {
+					fmt.Fprintf(c.OutOrStdout(), "imported key %s forgotten\n", args[0])
+				}
+				if res == nil {
+					return err
+				}
+				return reportAWG(c.OutOrStdout(), res, err)
+			}
 			started := time.Now()
 			res, err := a.Tunnels().Remove(c.Context(), args[0], rmDry)
 			if res != nil {
@@ -146,7 +159,50 @@ func newAWGCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(inspect, list, plan, apply, remove, status)
+	var noApply, replace bool
+	importCmd := &cobra.Command{
+		Use:   "import NAME FILE|vpn://KEY|-",
+		Short: "Add a client key of any AmneziaWG server (.conf or vpn://) as a tunnel and import it onto the router",
+		Long: `Stores the key in state_dir/tunnels/NAME.conf (mode 0600) and creates a
+Wireguard<N> interface for it. Works with keys from the AmneziaVPN app, from a
+friend's or provider's server, or from ` + "`awgkeen peer add`" + `. Import several keys
+under different names to use several servers; route domain groups to them
+with ` + "`tunnel: NAME`" + ` in domains.yaml.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(c *cobra.Command, args []string) error {
+			var data []byte
+			var err error
+			switch src := args[1]; {
+			case strings.HasPrefix(src, "vpn://"):
+				data = []byte(src)
+			case src == "-":
+				data, err = io.ReadAll(io.LimitReader(c.InOrStdin(), 1<<20))
+			default:
+				data, err = os.ReadFile(src) //nolint:gosec // operator-supplied path
+			}
+			if err != nil {
+				return err
+			}
+			a, err := app.New(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = a.Close() }()
+			res, err := a.ImportTunnel(c.Context(), syncer.TriggerCLI, args[0], data, !noApply, replace)
+			if res == nil && err == nil {
+				fmt.Fprintf(c.OutOrStdout(), "key saved as tunnel %s; import it with: awgkeen awg apply %s\n", args[0], args[0])
+				return nil
+			}
+			if res == nil {
+				return err
+			}
+			return reportAWG(c.OutOrStdout(), res, err)
+		},
+	}
+	importCmd.Flags().BoolVar(&noApply, "no-apply", false, "only store the key; import onto the router later")
+	importCmd.Flags().BoolVar(&replace, "replace", false, "replace the key of an imported tunnel (e.g. after the server re-issued it)")
+
+	cmd.AddCommand(inspect, list, plan, apply, importCmd, remove, status)
 	return cmd
 }
 
@@ -172,7 +228,7 @@ func runAWGApply(c *cobra.Command, cfgPath string, names []string, o awg.ApplyOp
 // applyTunnelsOnStart imports the tunnels before the daemon's first sync, so
 // that `tunnel:` routes resolve. Failures are logged and alerted, not fatal.
 func applyTunnelsOnStart(ctx context.Context, a *app.App) {
-	if len(a.Config.AWG.Tunnels) == 0 || !a.Config.AWG.ApplyAtStart() {
+	if len(a.Tunnels().List()) == 0 || !a.Config.AWG.ApplyAtStart() {
 		return
 	}
 	started := time.Now()

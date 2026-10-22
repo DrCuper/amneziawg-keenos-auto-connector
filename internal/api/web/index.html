@@ -170,8 +170,25 @@ const views = {
 
   async tunnels(v) {
     const ts = await api("GET", "/tunnels");
-    v.append(card("Туннели", table(["Туннель", "Интерфейс", "Включён", "Применён"], ts.map((t) => [t.name + (t.orphan ? " (нет в конфиге)" : ""),
-      (t.interface || "—") + (t.auto_interface ? " (auto)" : ""), t.enabled ? "да" : "нет", fmtTime(t.applied_at)]))));
+    const out = el("div", {});
+    const del = (t) => { const b = el("button", { class: "act" }, "Удалить"); b.onclick = () => run(b, async () => {
+      if (!confirm("Удалить туннель " + t.name + " с роутера и забыть его ключ?")) return;
+      out.replaceChildren(opResult(await api("DELETE", "/tunnels/" + encodeURIComponent(t.name)))); await route("tunnels"); }); return b; };
+    v.append(card("Туннели", table(["Туннель", "Интерфейс", "Включён", "Применён", ""], ts.map((t) => [t.name + (t.orphan ? " (нет в конфиге)" : t.imported ? " (импортирован)" : ""),
+      (t.interface || "—") + (t.auto_interface ? " (auto)" : ""), t.enabled ? "да" : "нет", fmtTime(t.applied_at), t.imported ? del(t) : ""]))));
+    const name = el("input", { placeholder: "имя, например nl или friend" });
+    const key = el("textarea", { placeholder: "ключ vpn://… или содержимое .conf от любого сервера AmneziaWG" });
+    const replace = el("input", { type: "checkbox" });
+    const imp = el("button", { class: "act primary" }, "Импортировать ключ");
+    imp.onclick = () => run(imp, async () => {
+      const n = name.value.trim(), k = key.value.trim(); if (!n || !k) return;
+      const res = await api("POST", "/tunnels/import", { name: n, key: k, replace: replace.checked });
+      key.value = "";
+      out.replaceChildren(opResult(res));
+      if (res.ok) toast("Туннель " + n + " импортирован");
+    });
+    v.append(card("Добавить ключ", el("p", { class: "muted" }, "Ключ от уже работающего сервера (приложение AmneziaVPN, сервер друга или провайдера). Каждый ключ — отдельный туннель и интерфейс Wireguard на роутере; в domains.yaml направляйте группы через tunnel: <имя>. Ключ хранится в state_dir/tunnels с правами 0600 и обратно не показывается."),
+      name, key, el("label", {}, replace, " заменить ключ существующего импортированного туннеля"), el("div", { class: "row" }, imp), out));
     if (!ts.length) return;
     const stBox = el("div", {});
     v.append(card("Состояние", stBox));
@@ -182,12 +199,12 @@ const views = {
         p.endpoint || "—", p.handshake_age_seconds == null ? "—" : p.handshake_age_seconds < 0 ? "никогда" : Math.round(p.handshake_age_seconds) + " с назад",
         p.rx_bytes == null ? "—" : p.rx_bytes + " / " + p.tx_bytes]))));
     } catch (e) { stBox.append(el("p", { class: "bad" }, e.message)); }
-    const out = el("div", {});
     const plan = el("button", { class: "act" }, "План импорта");
     const apply = el("button", { class: "act primary" }, "Импортировать на роутер");
-    plan.onclick = () => run(plan, async () => out.replaceChildren(opResult(await api("POST", "/tunnels/apply", { dry_run: true }))));
-    apply.onclick = () => run(apply, async () => { if (!confirm("Применить конфигурацию туннелей на роутер?")) return; out.replaceChildren(opResult(await api("POST", "/tunnels/apply", {}))); });
-    v.append(card("Импорт", el("div", { class: "row" }, plan, apply), out));
+    const out2 = el("div", {});
+    plan.onclick = () => run(plan, async () => out2.replaceChildren(opResult(await api("POST", "/tunnels/apply", { dry_run: true }))));
+    apply.onclick = () => run(apply, async () => { if (!confirm("Применить конфигурацию туннелей на роутер?")) return; out2.replaceChildren(opResult(await api("POST", "/tunnels/apply", {}))); });
+    v.append(card("Импорт", el("div", { class: "row" }, plan, apply), out2));
   },
 
   async servers(v) {

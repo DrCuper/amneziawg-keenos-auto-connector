@@ -48,7 +48,10 @@ type Server struct {
 	Alerter  *notify.Alerter
 	Tunnels  *awg.Manager // nil or empty = no tunnels configured
 	Servers  ServerOps    // nil = no managed servers
-	Router   StateReader
+	// ImportKey / ForgetKey add and remove imported client keys (app).
+	ImportKey func(ctx context.Context, trigger, name string, key []byte, apply, replace bool) (*awg.Result, error)
+	ForgetKey func(ctx context.Context, trigger, name string) (*awg.Result, error)
+	Router    StateReader
 	// Checks returns the latest health results (nil = none yet).
 	Checks func() []health.Result
 	// Record writes journal entries for tunnel operations.
@@ -113,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 	read("GET /api/v1/tunnels", s.tunnels)
 	read("GET /api/v1/tunnels/status", s.tunnelStatus)
 	write("POST /api/v1/tunnels/apply", s.tunnelApply)
+	write("POST /api/v1/tunnels/import", s.tunnelImport)
+	write("DELETE /api/v1/tunnels/{name}", s.tunnelForget)
 	s.serverRoutes(read, write, func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(true, h)) })
 	read("GET /metrics", s.metrics)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {

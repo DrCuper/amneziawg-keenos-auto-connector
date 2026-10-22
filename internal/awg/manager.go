@@ -47,6 +47,48 @@ type Manager struct {
 
 	mu  sync.Mutex
 	mem map[string]Record
+	// tmu guards Tunnels: imported keys are added and dropped at runtime.
+	tmu sync.RWMutex
+}
+
+// List returns a snapshot of the tunnels.
+func (m *Manager) List() []Tunnel {
+	m.tmu.RLock()
+	defer m.tmu.RUnlock()
+	return append([]Tunnel(nil), m.Tunnels...)
+}
+
+// Put adds a tunnel or replaces one with the same name. A configured
+// (non-imported) tunnel is never replaced by an imported one.
+func (m *Manager) Put(t Tunnel) error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
+	m.tmu.Lock()
+	defer m.tmu.Unlock()
+	for i, o := range m.Tunnels {
+		if o.Name == t.Name {
+			if !o.Imported && t.Imported {
+				return fmt.Errorf("awg tunnel %q is defined in the config file; pick another name", t.Name)
+			}
+			m.Tunnels[i] = t
+			return nil
+		}
+	}
+	m.Tunnels = append(m.Tunnels, t)
+	return nil
+}
+
+// Drop forgets a tunnel (its router interface is removed by Remove).
+func (m *Manager) Drop(name string) {
+	m.tmu.Lock()
+	defer m.tmu.Unlock()
+	for i, t := range m.Tunnels {
+		if t.Name == name {
+			m.Tunnels = append(m.Tunnels[:i:i], m.Tunnels[i+1:]...)
+			return
+		}
+	}
 }
 
 // ApplyOptions tune Apply.
@@ -74,7 +116,7 @@ type Result struct {
 
 // Tunnel returns the configured tunnel by name.
 func (m *Manager) Tunnel(name string) (Tunnel, bool) {
-	for _, t := range m.Tunnels {
+	for _, t := range m.List() {
 		if t.Name == name {
 			return t, true
 		}
@@ -118,10 +160,11 @@ func (m *Manager) logger() *slog.Logger {
 
 func (m *Manager) selectTunnels(names []string) ([]Tunnel, error) {
 	if len(names) == 0 {
-		if len(m.Tunnels) == 0 {
-			return nil, errors.New("no awg tunnels configured (awg.tunnels in the config)")
+		all := m.List()
+		if len(all) == 0 {
+			return nil, errors.New("no awg tunnels configured (awg.tunnels in the config, or `awgkeen awg import`)")
 		}
-		return m.Tunnels, nil
+		return all, nil
 	}
 	var out []Tunnel
 	for _, n := range names {
@@ -224,7 +267,7 @@ func (m *Manager) resolveFor(t Tunnel, st *router.State, recs map[string]Record,
 	for k := range owner {
 		taken = append(taken, k)
 	}
-	for _, other := range m.Tunnels {
+	for _, other := range m.List() {
 		if !other.AutoInterface() {
 			taken = append(taken, other.Interface)
 		}

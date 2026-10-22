@@ -139,6 +139,7 @@ awgkeen health [--notify]                 # разовый прогон пров
 awgkeen awg inspect main.conf             # разобрать .conf / vpn:// без секретов (роутер не нужен)
 awgkeen awg list                          # туннели и их интерфейсы
 awgkeen awg plan                          # что изменится на роутере
+awgkeen awg import nl 'vpn://...'         # ключ от уже работающего сервера → новый туннель
 awgkeen awg apply [main] [--force-keys]   # создать/обновить Wireguard-интерфейс, проверить, сохранить
 awgkeen awg status                        # интерфейс, пиры, handshake, трафик
 awgkeen awg remove main                   # удалить интерфейс туннеля (только созданный awgkeen)
@@ -227,7 +228,30 @@ Dry‑run и ручные правки алерты не меняют. Тело 
 
 ## AmneziaWG‑туннели
 
-В `config.yaml`:
+Проще всего — импортировать ключ от уже работающего сервера (из приложения
+AmneziaVPN, от друга, провайдера или выданный `awgkeen peer add`), без правки
+конфига. Каждый ключ — отдельный туннель и свой `Wireguard<N>`, так что
+серверов может быть сколько угодно:
+
+```sh
+awgkeen awg import nl 'vpn://AAAF...'      # ключ из AmneziaVPN («Поделиться» → ключ)
+awgkeen awg import de /path/to/de.conf     # или .conf; `-` — из stdin
+awgkeen awg import nl new.conf --replace   # сервер перевыпустил ключ
+awgkeen awg remove de                      # удалить интерфейс и забыть ключ
+```
+
+Ключи хранятся в `state_dir/tunnels/<имя>.conf` (0600). То же — во вкладке
+«Туннели» веб‑интерфейса и через `POST /api/v1/tunnels/import`
+(`{"name":"nl","key":"vpn://…"}`). Группы направляются на туннель по имени,
+несколько маршрутов подряд дают резерв:
+
+```yaml
+connections:
+  vpn:
+    routes: [{tunnel: nl}, {tunnel: de}]
+```
+
+Туннели можно описать и в `config.yaml` (с тонкими настройками):
 
 ```yaml
 awg:
@@ -345,6 +369,7 @@ curl -H "$H" http://host:8080/metrics
 | `GET /api/v1/journal[?group&kind&status&since&dry_run&limit]`, `/journal/{id}` | журнал |
 | `GET /api/v1/alerts`, `/checks`, `/router` | алерты, проверки, состояние роутера (без ключей) |
 | `GET /api/v1/tunnels`, `/tunnels/status`; `POST /api/v1/tunnels/apply` | AWG‑туннели |
+| `POST /api/v1/tunnels/import`; `DELETE /api/v1/tunnels/{name}` | `{"name","key","apply":true,"replace":false}` — добавить ключ любого сервера; удалить импортированный |
 | `GET /api/v1/servers`, `/servers/{s}/status`, `/servers/{s}/peers` | серверы, состояние, клиенты (без ключей) |
 | `POST /api/v1/servers/{s}/peers` | `{"name":"phone","deploy":true}` — выдать ключ |
 | `POST /api/v1/servers/{s}/peers/{p}/rotate`, `/disable`, `/enable`; `DELETE /api/v1/servers/{s}/peers/{p}` | операции с клиентом (`{"deploy":false}` — без деплоя) |

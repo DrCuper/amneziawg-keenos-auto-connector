@@ -125,12 +125,8 @@ func (a *App) NewSyncer(st store.Store) *syncer.Syncer {
 		observers = append(observers, &journal.Observer{J: j, MaxChanges: a.Config.Journal.MaxChanges})
 	}
 	observers = append(observers, a.Alerter())
-	var resolve func(string) (string, error)
-	if len(a.Config.AWG.Tunnels) > 0 {
-		resolve = a.Tunnels().Resolve
-	}
 	return &syncer.Syncer{
-		ResolveTunnel: resolve,
+		ResolveTunnel: a.Tunnels().Resolve,
 		Observers:     observers,
 		SpecPath:      a.DomainsFile(),
 		Store:         st,
@@ -209,18 +205,33 @@ func (a *App) Alerter() *notify.Alerter {
 	return a.alerter
 }
 
-// Tunnels returns the AWG tunnel manager (state in <state_dir>/awg.json).
+// Tunnels returns the AWG tunnel manager (state in <state_dir>/awg.json):
+// the tunnels of the config file plus the keys imported with `awg import`.
 func (a *App) Tunnels() *awg.Manager {
 	if a.tunnels == nil {
 		a.tunnels = &awg.Manager{
 			Router:    a.Client,
-			Tunnels:   a.Config.AWG.Tunnels,
+			Tunnels:   append([]awg.Tunnel(nil), a.Config.AWG.Tunnels...),
 			BaseDir:   a.ConfigDir,
 			StatePath: filepath.Join(a.Config.StateDir, "awg.json"),
 			Logger:    a.Logger,
 		}
+		imported, err := a.Keys().Tunnels()
+		if err != nil {
+			a.Logger.Warn("awg: cannot read imported keys", "err", err)
+		}
+		for _, t := range imported {
+			if err := a.tunnels.Put(t); err != nil {
+				a.Logger.Warn("awg: imported key ignored", "tunnel", t.Name, "err", err)
+			}
+		}
 	}
 	return a.tunnels
+}
+
+// Keys is the store of imported client keys (<state_dir>/tunnels).
+func (a *App) Keys() awg.KeyStore {
+	return awg.KeyStore{Dir: filepath.Join(a.Config.StateDir, "tunnels")}
 }
 
 // ServerNames lists the configured servers in config order.
@@ -312,7 +323,7 @@ func (a *App) HealthChecks() []health.Check {
 	if h.RouterEnabled() {
 		out = append(out, health.RouterCheck{Router: a.Client})
 	}
-	for _, t := range a.Config.AWG.Tunnels {
+	for _, t := range a.Tunnels().List() {
 		if t.Check.IsEnabled() {
 			out = append(out, health.AWGCheck{Tunnel: t, Tunnels: a.Tunnels()})
 		}
@@ -357,9 +368,8 @@ func (a *App) NewAPI(st store.Store, s *syncer.Syncer, ops *sync.Mutex, checks f
 		Version:    version,
 		Logger:     a.Logger,
 	}
-	if len(a.Config.AWG.Tunnels) > 0 {
-		srv.Tunnels = a.Tunnels()
-	}
+	srv.Tunnels = a.Tunnels()
+	srv.ImportKey, srv.ForgetKey = a.ImportTunnel, a.ForgetTunnel
 	if len(a.Config.Servers) > 0 {
 		srv.Servers = a
 	}
