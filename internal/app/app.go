@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/config"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/domains"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/health"
@@ -38,6 +39,7 @@ type App struct {
 
 	journal *journal.Journal
 	alerter *notify.Alerter
+	tunnels *awg.Manager
 }
 
 // New loads the config file and builds the router client.
@@ -109,10 +111,15 @@ func (a *App) NewSyncer(st store.Store) *syncer.Syncer {
 		observers = append(observers, &journal.Observer{J: j, MaxChanges: a.Config.Journal.MaxChanges})
 	}
 	observers = append(observers, a.Alerter())
+	var resolve func(string) (string, error)
+	if len(a.Config.AWG.Tunnels) > 0 {
+		resolve = a.Tunnels().Resolve
+	}
 	return &syncer.Syncer{
-		Observers: observers,
-		SpecPath:  a.DomainsFile(),
-		Store:     st,
+		ResolveTunnel: resolve,
+		Observers:     observers,
+		SpecPath:      a.DomainsFile(),
+		Store:         st,
 		Fetcher: &source.Fetcher{
 			HTTP:      &http.Client{Timeout: sc.SourceTimeout},
 			Cache:     st,
@@ -188,12 +195,32 @@ func (a *App) Alerter() *notify.Alerter {
 	return a.alerter
 }
 
-// HealthChecks returns the configured checks: the router first, then hooks.
+// Tunnels returns the AWG tunnel manager (state in <state_dir>/awg.json).
+func (a *App) Tunnels() *awg.Manager {
+	if a.tunnels == nil {
+		a.tunnels = &awg.Manager{
+			Router:    a.Client,
+			Tunnels:   a.Config.AWG.Tunnels,
+			BaseDir:   a.ConfigDir,
+			StatePath: filepath.Join(a.Config.StateDir, "awg.json"),
+			Logger:    a.Logger,
+		}
+	}
+	return a.tunnels
+}
+
+// HealthChecks returns the configured checks: the router first, then AWG
+// tunnels, then hooks.
 func (a *App) HealthChecks() []health.Check {
 	h := a.Config.Health
 	var out []health.Check
 	if h.RouterEnabled() {
 		out = append(out, health.RouterCheck{Router: a.Client})
+	}
+	for _, t := range a.Config.AWG.Tunnels {
+		if t.Check.IsEnabled() {
+			out = append(out, health.AWGCheck{Tunnel: t, Tunnels: a.Tunnels()})
+		}
 	}
 	for _, c := range h.Checks {
 		out = append(out, health.CommandCheck{Name: c.Name, Alert: c.Alert, Command: c.Command, Timeout: c.Timeout})

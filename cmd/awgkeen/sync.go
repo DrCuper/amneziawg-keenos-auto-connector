@@ -109,6 +109,7 @@ func newServeCmd(cfgPath *string) *cobra.Command {
 			wg.Add(2)
 			go func() { defer wg.Done(); mon.Run(ctx) }()
 			go func() { defer wg.Done(); prunePeriodically(ctx, a) }()
+			applyTunnelsOnStart(ctx, a)
 			return sch.Start(ctx)
 		},
 	}

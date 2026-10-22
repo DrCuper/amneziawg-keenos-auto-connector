@@ -8,7 +8,8 @@ connections:
   awg:
     description: "AmneziaWG tunnel"
     routes:
-      - interface: Wireguard0       # auto: true by default
+      - tunnel: main                # interface of awg.tunnels[main] from config.yaml (stage 4)
+      # - interface: Wireguard0     # or a fixed interface; auto: true by default
       - interface: Wireguard1       # failover
         reject: true                # drop instead of leaking via the default route
   reality:

@@ -239,3 +239,16 @@ func (t *Transport) drop(c *ssh.Client) {
 		t.client = nil
 	}
 }
+
+// InterfaceStatus runs `show interface <name>` and parses the console tree.
+func (t *Transport) InterfaceStatus(ctx context.Context, name string) (*router.WGStatus, error) {
+	cmd := cli.ShowInterface(name)
+	out, err := t.run(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	if msg := errorLine(out); msg != "" {
+		return nil, &router.CommandError{Command: cmd, Message: msg}
+	}
+	return router.ParseWGStatus(name, cli.ParseShow(out)), nil
+}

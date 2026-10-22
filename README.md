@@ -7,9 +7,9 @@
 сервиса и план этапов — в [`openspec/project.md`](openspec/project.md),
 спецификации — в `openspec/specs/`, предложения — в `openspec/changes/`.
 
-**Статус:** этап 3 — журнал изменений и уведомления
-(`openspec/changes/add-journal-notify`); этапы 1–2 (клиент роутера, группы и
-синхронизация) заархивированы в `openspec/specs/`.
+**Статус:** этап 4 — импорт AmneziaWG‑конфига на роутер
+(`openspec/changes/add-awg-import`); этапы 1–3 (клиент роутера, группы и
+синхронизация, журнал и уведомления) заархивированы в `openspec/specs/`.
 
 ## Что умеет сейчас
 
@@ -43,8 +43,15 @@
   недоступен, синхронизация не удалась, AWG упал. Одно сообщение на инцидент,
   напоминание раз в `repeat_interval`, сообщение о восстановлении; состояние
   алертов общее для демона и ручных запусков.
-* **Проверки здоровья** в `serve`: доступность роутера и хуки‑команды
-  (`health.checks`) — например, проверка handshake AWG своим скриптом.
+* **Проверки здоровья** в `serve`: доступность роутера, встроенная проверка
+  AWG‑туннелей (интерфейс поднят, свежий handshake) и хуки‑команды
+  (`health.checks`).
+* **Импорт AmneziaWG**: `.conf` или ключ `vpn://` из приложения Amnezia →
+  интерфейс `Wireguard<N>` на роутере (ключи, адрес, MTU, endpoint,
+  AllowedIPs, keepalive, обфускация Jc/Jmin/Jmax/S1/S2/H1–H4 и AWG 2.0
+  S3/S4/I1–I5). Идемпотентно и через дифф, как группы; ключи нигде не
+  выводятся; чужие интерфейсы не трогаются. Маршруты групп могут ссылаться
+  на туннель по имени (`tunnel: main`).
 
 ## Установка
 
@@ -119,6 +126,13 @@ awgkeen notify test                       # тестовое сообщение 
 awgkeen notify status                     # активные алерты
 awgkeen health [--notify]                 # разовый прогон проверок
 
+awgkeen awg inspect main.conf             # разобрать .conf / vpn:// без секретов (роутер не нужен)
+awgkeen awg list                          # туннели и их интерфейсы
+awgkeen awg plan                          # что изменится на роутере
+awgkeen awg apply [main] [--force-keys]   # создать/обновить Wireguard-интерфейс, проверить, сохранить
+awgkeen awg status                        # интерфейс, пиры, handshake, трафик
+awgkeen awg remove main                   # удалить интерфейс туннеля (только созданный awgkeen)
+
 awgkeen router show                       # группы и маршруты на роутере
 awgkeen router show --raw                 # весь running-config
 awgkeen router plan  -d groups.yaml       # что изменится (роутер не трогается)
@@ -183,6 +197,7 @@ awgkeen notify test
 |---|---|---|
 | `router_unreachable` | роутер не ответил после всех ретраев (sync или проверка `health`) | роутер ответил |
 | `sync_failed` | роутер ответил, но синхронизация не удалась (отказ команды, верификация, ошибка группы) | успешная синхронизация |
+| `awg_down:<tunnel>` | туннель `awg.tunnels`: интерфейса нет, он выключен или handshake старше `check.max_handshake_age` | свежий handshake |
 | `awg_down:<check>` | хук `health.checks` вернул ненулевой код или превысил таймаут | хук вернул 0 |
 
 Dry‑run и ручные правки алерты не меняют. Тело webhook:
@@ -194,6 +209,52 @@ Dry‑run и ручные правки алерты не меняют. Тело 
 ```
 
 `event`: `firing`, `reminder`, `resolved`, `info` (при `on_apply: true`), `test`.
+
+## AmneziaWG‑туннели
+
+В `config.yaml`:
+
+```yaml
+awg:
+  tunnels:
+    - name: main
+      conf_file: /etc/awgkeen/main.conf   # .conf или файл с vpn://... (chmod 600)
+      interface: auto                     # или Wireguard2; auto = свободный номер, запоминается
+      # ip_global: auto                   # «использовать для выхода в интернет» (по умолчанию не трогаем)
+```
+
+и в `domains.yaml` маршрут на туннель по имени:
+
+```yaml
+connections:
+  awg:
+    routes: [{tunnel: main}]
+```
+
+```
+$ awgkeen awg plan
+tunnel main -> Wireguard1 (create)
+  warning: DNS from the config is ignored: the router keeps its own DNS (domain routing relies on it)
+
+interface Wireguard1:
+  + interface Wireguard1
+  ~ description "awgkeen: main"
+  ~ ip address 10.8.1.2/32
+  ~ private-key <secret>
+  ~ asc 4 40 70 0 0 1 2 3 4
+  + peer QkJCQkJC…
+  ~ peer QkJCQkJC… endpoint vpn.example.com:51820
+  + peer QkJCQkJC… allow-ips 0.0.0.0/0
+  + up
+```
+
+Ключи роутер в running‑config не показывает, поэтому они отправляются при
+создании интерфейса, при смене ключей в `.conf` (сервис хранит отпечаток в
+`state_dir/awg.json`) или по `--force-keys`. Интерфейс, созданный не сервисом,
+меняется только с `adopt: true`. DNS из `.conf`, IPv6 и параметры AWG 1.5
+J1–J3/Itime игнорируются с предупреждением. `awgkeen serve` импортирует
+туннели при старте (`awg.apply_on_start`) и проверяет их каждые
+`health.interval`.
 
 ## Как это работает
 
@@ -219,7 +280,8 @@ internal/store/       файловое состояние: версии, applied
 internal/syncer/      оркестратор синхронизации, откат, планировщик cron, наблюдатели
 internal/journal/     журнал изменений (JSON Lines), запросы, ротация
 internal/notify/      Telegram/webhook, алерты с подавлением повторов и восстановлением
-internal/health/      проверки здоровья: роутер, хуки-команды; монитор для serve
+internal/health/      проверки здоровья: роутер, AWG-туннели, хуки-команды; монитор для serve
+internal/awg/         разбор .conf / vpn://, импорт туннелей, оценка handshake
 internal/router/      модель, план (дифф), Client: lock → read → backup → plan → apply → verify → save
 internal/router/cli/  парсер running-config и генерация команд
 internal/router/rci/  транспорт RCI
@@ -240,4 +302,4 @@ openspec validate --strict
 
 ## Дорожная карта
 
-См. таблицу этапов в [`openspec/project.md`](openspec/project.md): импорт AWG‑конфига → веб‑интерфейс → управление сервером и пирами.
+См. таблицу этапов в [`openspec/project.md`](openspec/project.md): веб‑интерфейс и REST API → управление сервером и пирами.

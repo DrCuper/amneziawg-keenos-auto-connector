@@ -17,6 +17,7 @@ import (
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/health"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/notify"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router"
 )
 
 func openJournal(cfgPath string) (*app.App, *journal.Journal, error) {
@@ -279,9 +280,13 @@ func printEntry(w io.Writer, e *journal.Entry) {
 		fmt.Fprintln(w, "\ndiff:")
 		cur := ""
 		for _, c := range e.Changes {
-			if c.Group != cur {
-				cur = c.Group
-				fmt.Fprintf(w, "group %s:\n", cur)
+			if key := c.Kind + "|" + c.Group; key != cur {
+				cur = key
+				if c.Kind == router.KindInterface {
+					fmt.Fprintf(w, "interface %s:\n", c.Group)
+				} else {
+					fmt.Fprintf(w, "group %s:\n", c.Group)
+				}
 			}
 			fmt.Fprintf(w, "  %s\n", c.Text)
 		}
@@ -394,7 +399,7 @@ func newHealthCmd(cfgPath *string) *cobra.Command {
 	var update bool
 	cmd := &cobra.Command{
 		Use:   "health",
-		Short: "Run the health checks once (router reachability, health.checks hooks)",
+		Short: "Run the health checks once (router reachability, AWG tunnels, health.checks hooks)",
 		RunE: func(c *cobra.Command, _ []string) error {
 			a, err := app.New(*cfgPath)
 			if err != nil {

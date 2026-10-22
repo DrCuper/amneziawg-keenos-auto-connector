@@ -53,6 +53,8 @@ func (r DNSRoute) Destination() string {
 type State struct {
 	Groups []FQDNGroup
 	Routes []DNSRoute
+	// Interfaces are the `interface Wireguard<N>` sections.
+	Interfaces []WGInterface
 	// Raw is the full running-config text the state was parsed from. It is
 	// kept for backups and `router show --raw`.
 	Raw string
@@ -86,6 +88,9 @@ type RouteSpec struct {
 	Via       string `yaml:"via,omitempty"`
 	Auto      *bool  `yaml:"auto,omitempty"` // default true
 	Reject    bool   `yaml:"reject,omitempty"`
+	// Tunnel names an AWG tunnel from the config (stage 4); the syncer
+	// resolves it to the tunnel's interface before Normalize.
+	Tunnel string `yaml:"tunnel,omitempty"`
 }
 
 // Desired is the full desired state for the groups this service owns.
@@ -95,6 +100,13 @@ type Desired struct {
 	// not listed here. Off by default so a partial desired file never deletes
 	// groups the operator created by hand.
 	Prune bool `yaml:"prune,omitempty"`
+
+	// Interfaces are Wireguard interfaces owned by the service (stage 4).
+	// Each listed interface is managed entirely: peers not listed are
+	// removed. Interfaces not listed are never touched.
+	Interfaces []WGInterface `yaml:"-"`
+	// RemoveInterfaces are deleted (`no interface <name>`) when present.
+	RemoveInterfaces []string `yaml:"-"`
 }
 
 // Normalize fills Routes from RoutesSpec, trims and lowercases entries,
@@ -130,6 +142,10 @@ func (d *Desired) Normalize(limits Limits) error {
 			if rs.Auto != nil {
 				r.Auto = *rs.Auto
 			}
+			if rs.Tunnel != "" && r.Interface == "" {
+				errs = append(errs, fmt.Errorf("group %q: tunnel %q is not resolved to an interface", g.Name, rs.Tunnel))
+				continue
+			}
 			if (r.Interface == "") == (r.Gateway == "") {
 				errs = append(errs, fmt.Errorf("group %q: route must set exactly one of interface or gateway", g.Name))
 				continue
@@ -139,6 +155,25 @@ func (d *Desired) Normalize(limits Limits) error {
 				continue
 			}
 			g.Routes = append(g.Routes, r)
+		}
+	}
+	ifaces := map[string]bool{}
+	for i := range d.Interfaces {
+		w := &d.Interfaces[i]
+		if err := w.normalize(); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if ifaces[strings.ToLower(w.Name)] {
+			errs = append(errs, fmt.Errorf("interface %s: listed twice", w.Name))
+		}
+		ifaces[strings.ToLower(w.Name)] = true
+	}
+	for _, n := range d.RemoveInterfaces {
+		if err := ValidateWGName(n); err != nil {
+			errs = append(errs, err)
+		} else if ifaces[strings.ToLower(n)] {
+			errs = append(errs, fmt.Errorf("interface %s: both desired and removed", n))
 		}
 	}
 	return errors.Join(errs...)

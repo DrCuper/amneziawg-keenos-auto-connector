@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
 )
 
 // Environment variables that override secrets in the YAML file.
@@ -38,7 +40,19 @@ type Config struct {
 	Journal  Journal `yaml:"journal"`
 	Notify   Notify  `yaml:"notify"`
 	Health   Health  `yaml:"health"`
+	AWG      AWG     `yaml:"awg"`
 }
+
+// AWG lists AmneziaWG tunnels to import onto the router (stage 4).
+type AWG struct {
+	Tunnels []awg.Tunnel `yaml:"tunnels"`
+	// ApplyOnStart: `serve` imports the tunnels before the first sync
+	// (default true).
+	ApplyOnStart *bool `yaml:"apply_on_start"`
+}
+
+// ApplyAtStart reports whether serve imports tunnels at startup.
+func (a AWG) ApplyAtStart() bool { return a.ApplyOnStart == nil || *a.ApplyOnStart }
 
 // Journal configures the change journal (stage 3).
 type Journal struct {
@@ -328,6 +342,16 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("sync.source_max_bytes must be positive"))
 	}
 	errs = append(errs, c.validateStage3()...)
+	if err := awg.ValidateTunnels(c.AWG.Tunnels); err != nil {
+		errs = append(errs, err)
+	}
+	for _, t := range c.AWG.Tunnels {
+		for _, ch := range c.Health.Checks {
+			if ch.Name == t.Name && (ch.Alert == "" || ch.Alert == "awg_down") {
+				errs = append(errs, fmt.Errorf("health.checks %q and awg tunnel %q would share the alert awg_down:%s; rename one", ch.Name, t.Name, t.Name))
+			}
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -410,6 +434,15 @@ func (c Config) Redacted() Config {
 			}
 		}
 		c.Notify.Webhooks = ws
+	}
+	if len(c.AWG.Tunnels) > 0 {
+		ts := append([]awg.Tunnel(nil), c.AWG.Tunnels...)
+		for i := range ts {
+			if ts[i].Conf != "" {
+				ts[i].Conf = "***"
+			}
+		}
+		c.AWG.Tunnels = ts
 	}
 	return c
 }

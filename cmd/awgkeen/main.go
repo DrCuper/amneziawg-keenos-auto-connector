@@ -1,6 +1,6 @@
 // Command awgkeen manages domain-based routing and AmneziaWG connections on
 // Keenetic routers: `router` (stage 1), `sync`, `serve` and `groups` (stage 2),
-// `journal`, `notify` and `health` (stage 3).
+// `journal`, `notify` and `health` (stage 3), `awg` (stage 4).
 package main
 
 import (
@@ -38,7 +38,7 @@ func newRoot() *cobra.Command {
 	}
 	root.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.yaml", "path to YAML config")
 	root.AddCommand(newRouterCmd(&cfgPath), newSyncCmd(&cfgPath), newServeCmd(&cfgPath), newGroupsCmd(&cfgPath),
-		newJournalCmd(&cfgPath), newNotifyCmd(&cfgPath), newHealthCmd(&cfgPath))
+		newJournalCmd(&cfgPath), newNotifyCmd(&cfgPath), newHealthCmd(&cfgPath), newAWGCmd(&cfgPath))
 	return root
 }
 

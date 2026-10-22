@@ -13,8 +13,14 @@ import (
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/syncer"
 )
 
-// KindRouterApply is `router apply` with a hand-written desired file.
-const KindRouterApply = "router-apply"
+// Kinds recorded outside the syncer.
+const (
+	// KindRouterApply is `router apply` with a hand-written desired file.
+	KindRouterApply = "router-apply"
+	// KindAWGApply / KindAWGRemove are AWG tunnel imports and removals.
+	KindAWGApply  = "awg-apply"
+	KindAWGRemove = "awg-remove"
+)
 
 // Entry statuses.
 const (
@@ -67,6 +73,9 @@ type Group struct {
 type Change struct {
 	Group string `json:"group"`
 	Text  string `json:"text"`
+	// Kind is "interface" for Wireguard interface lines (Group is then the
+	// interface name); empty for groups.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Manual describes a manual edit.
@@ -160,7 +169,7 @@ func (e *Entry) addApply(a *router.ApplyResult, maxChanges int) {
 			e.ChangesOmitted = len(a.Plan.Changes) - maxChanges
 			break
 		}
-		e.Changes = append(e.Changes, Change{Group: c.Group, Text: c.Text})
+		e.Changes = append(e.Changes, Change{Group: c.Group, Text: c.Text, Kind: c.Kind})
 	}
 }
 

@@ -46,7 +46,8 @@ internal/store/         состояние: версии групп, applied/pin
 internal/syncer/        оркестратор синхронизации, откат, планировщик cron, Observer
 internal/journal/       журнал изменений (JSON Lines), запросы и ротация
 internal/notify/        каналы Telegram/webhook, алерты с подавлением повторов
-internal/health/        проверки здоровья (роутер, хуки) и монитор для serve
+internal/health/        проверки здоровья (роутер, AWG, хуки) и монитор для serve
+internal/awg/           разбор .conf/vpn://, импорт туннелей в Wireguard<N>, оценка handshake
 internal/router/        Доменная модель роутера: State, Desired*, Plan, Client
 internal/router/rci/    Транспорт RCI (HTTP, challenge‑response auth)
 internal/router/sshx/   Транспорт SSH (CLI через exec)

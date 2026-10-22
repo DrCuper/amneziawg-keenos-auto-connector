@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -326,4 +327,20 @@ func truncate(b []byte) string {
 		return s[:200] + "…"
 	}
 	return s
+}
+
+// InterfaceStatus reads GET /rci/show/interface?name=<name>.
+func (t *Transport) InterfaceStatus(ctx context.Context, name string) (*router.WGStatus, error) {
+	body, _, err := t.do(ctx, http.MethodGet, "/rci/show/interface?name="+url.QueryEscape(name), nil)
+	if err != nil {
+		return nil, err
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(body, &tree); err != nil {
+		return nil, &router.TransportError{Op: "show interface", Err: fmt.Errorf("unexpected answer: %s", truncate(body))}
+	}
+	if r := collectStatus(body); r.err != "" {
+		return nil, &router.CommandError{Command: "show interface " + name, Message: r.err}
+	}
+	return router.ParseWGStatus(name, tree), nil
 }

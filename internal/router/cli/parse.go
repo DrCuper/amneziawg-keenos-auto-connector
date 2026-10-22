@@ -26,11 +26,18 @@ func Parse(text string) *router.State {
 	var (
 		curGroup *router.FQDNGroup
 		inDNS    bool
+		curIface *router.WGInterface
+		peer     = -1 // index of the open `wireguard peer` subsection
+		peerInd  int  // its indentation
 	)
 	flush := func() {
 		if curGroup != nil {
 			st.Groups = append(st.Groups, *curGroup)
 			curGroup = nil
+		}
+		if curIface != nil {
+			st.Interfaces = append(st.Interfaces, *curIface)
+			curIface, peer = nil, -1
 		}
 	}
 	for _, raw := range strings.Split(text, "\n") {
@@ -56,6 +63,8 @@ func Parse(text string) *router.State {
 				} else {
 					curGroup = &g
 				}
+			case len(fields) == 2 && fields[0] == "interface" && router.ValidateWGName(fields[1]) == nil:
+				curIface = &router.WGInterface{Name: fields[1]}
 			case fields[0] == "dns-proxy":
 				if len(fields) > 1 {
 					applyDNSLine(st, fields[1:])
@@ -66,6 +75,16 @@ func Parse(text string) *router.State {
 			continue
 		}
 		switch {
+		case curIface != nil:
+			ind := len(line) - len(strings.TrimLeft(line, " \t"))
+			if peer >= 0 && ind > peerInd {
+				applyPeerLine(&curIface.Peers[peer], fields)
+				continue
+			}
+			peer = -1
+			if applyIfaceLine(curIface, fields) {
+				peer, peerInd = len(curIface.Peers)-1, ind
+			}
 		case curGroup != nil:
 			applyGroupLine(curGroup, fields)
 		case inDNS:

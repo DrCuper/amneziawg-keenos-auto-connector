@@ -41,8 +41,11 @@ type Syncer struct {
 	// Observers are told about every sync, rollback and manual edit after it
 	// finished (journal, notifications). They must not block for long.
 	Observers []Observer
-	Logger    *slog.Logger
-	Now       func() time.Time
+	// ResolveTunnel maps an AWG tunnel name used in a connection route
+	// (`tunnel: main`) to its Wireguard interface. nil = tunnels unsupported.
+	ResolveTunnel func(name string) (string, error)
+	Logger        *slog.Logger
+	Now           func() time.Time
 }
 
 // Options tune one run.
@@ -157,8 +160,12 @@ func (s *Syncer) run(ctx context.Context, opts Options) (*Result, error) {
 
 	res := &Result{DryRun: opts.DryRun}
 	var contents []groupContent
+	routes := map[string][]router.RouteSpec{}
 	for _, g := range groups {
 		gr, c := s.resolve(ctx, spec, g, opts)
+		if gr.Err == nil {
+			routes[g.Name], gr.Err = s.routes(spec, g)
+		}
 		res.Groups = append(res.Groups, gr)
 		if gr.Err == nil {
 			contents = append(contents, c)
@@ -176,7 +183,7 @@ func (s *Syncer) run(ctx context.Context, opts Options) (*Result, error) {
 	for _, c := range contents {
 		want.Groups = append(want.Groups, router.DesiredGroup{
 			Name: c.group.Name, Description: c.group.Description,
-			Include: c.entries, Exclude: c.exclude, RoutesSpec: spec.Routes(c.group),
+			Include: c.entries, Exclude: c.exclude, RoutesSpec: routes[c.group.Name],
 		})
 	}
 
@@ -527,4 +534,25 @@ func (r *Result) Summary() string {
 		}
 	}
 	return b.String()
+}
+
+// routes returns the group's connection routes with `tunnel:` references
+// resolved to interfaces.
+func (s *Syncer) routes(spec *domains.Spec, g *domains.Group) ([]router.RouteSpec, error) {
+	in := spec.Routes(g)
+	out := make([]router.RouteSpec, len(in))
+	for i, r := range in {
+		if r.Tunnel != "" {
+			if s.ResolveTunnel == nil {
+				return nil, fmt.Errorf("connection %s: awg tunnels are not configured", g.Connection)
+			}
+			iface, err := s.ResolveTunnel(r.Tunnel)
+			if err != nil {
+				return nil, fmt.Errorf("connection %s: %w", g.Connection, err)
+			}
+			r.Interface = iface
+		}
+		out[i] = r
+	}
+	return out, nil
 }

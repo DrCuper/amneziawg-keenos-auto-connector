@@ -49,7 +49,7 @@ journal:
   max_entries: 5000             # and keep at most this many (0 = unlimited)
   max_changes: 500              # diff lines stored per entry
 
-# Alerts: router_unreachable, sync_failed, awg_down:<check>. One message per
+# Alerts: router_unreachable, sync_failed, awg_down:<tunnel|check>. One message per
 # incident, reminders every repeat_interval, "resolved" on recovery.
 notify:
   telegram:
@@ -73,11 +73,35 @@ notify:
 health:
   interval: 5m                  # 0 = off
   router: true                  # read running-config -> router_unreachable
+  # AWG tunnels below are checked automatically (awg_down:<tunnel>).
   checks: []
   #  - name: awg                # alert awg_down:awg while the command fails
   #    command: ["/usr/local/bin/check-awg", "Wireguard0"]   # argv, no shell; exit 0 = healthy
   #    timeout: 30s
   #    alert: awg_down
+
+# AmneziaWG tunnels imported onto the router (`awgkeen awg ...`). Each tunnel
+# keeps one Wireguard<N> interface equal to its .conf; keys are sent only when
+# they change and never printed. In domains.yaml route to it with
+# `routes: [{tunnel: main}]`.
+awg:
+  apply_on_start: true          # `awgkeen serve`: import before the first sync
+  tunnels: []
+  #  - name: main
+  #    conf_file: /etc/awgkeen/main.conf   # Amnezia .conf or a file with a vpn:// key (chmod 600)
+  #    interface: auto                     # Wireguard<N> or auto (lowest free, remembered in state_dir/awg.json)
+  #    adopt: false                        # allow managing an existing interface not created by awgkeen
+  #    description: "awgkeen: main"
+  #    security_level: public
+  #    ip_global: ""                       # "" = leave as is, auto | <priority> | off
+  #    adjust_mss: true                    # ip tcp adjust-mss pmtu
+  #    mtu: 0                              # override the .conf MTU
+  #    keepalive: 25                       # when the .conf has no PersistentKeepalive
+  #    allowed_ips: []                     # override AllowedIPs (IPv4 only)
+  #    enabled: true                       # interface up
+  #    check:
+  #      enabled: true
+  #      max_handshake_age: 5m             # older handshake -> awg_down:main
 
 log:
   level: info                   # debug | info | warn | error

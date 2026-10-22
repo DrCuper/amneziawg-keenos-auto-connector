@@ -148,8 +148,8 @@ func (c *Client) Apply(ctx context.Context, want *Desired, dryRun bool) (*ApplyR
 	}
 
 	c.o.Logger.Info("router: applying", "commands", len(plan.Commands))
-	if err := c.exec(ctx, plan.Commands); err != nil {
-		return res, err
+	if err := c.exec(ctx, plan.Commands, plan.RedactErr); err != nil {
+		return res, plan.RedactErr(err)
 	}
 	res.Applied = len(plan.Commands)
 
@@ -157,7 +157,7 @@ func (c *Client) Apply(ctx context.Context, want *Desired, dryRun bool) (*ApplyR
 	if err != nil {
 		return res, fmt.Errorf("re-read after apply: %w", err)
 	}
-	if rest := c.p.Diff(after, want); !rest.Empty() {
+	if rest := c.p.Diff(after, want); rest.Verifiable() {
 		return res, &VerifyError{Remaining: rest}
 	}
 
@@ -173,19 +173,27 @@ func (c *Client) Apply(ctx context.Context, want *Desired, dryRun bool) (*ApplyR
 // Save persists the running configuration.
 func (c *Client) Save(ctx context.Context) error {
 	c.o.Logger.Info("router: saving configuration")
-	return c.exec(ctx, []string{c.p.SaveCommand()})
+	return c.exec(ctx, []string{c.p.SaveCommand()}, nil)
 }
 
 // exec runs commands with retries on transport errors. Re-sending a batch is
-// safe because every command this service emits is idempotent.
-func (c *Client) exec(ctx context.Context, cmds []string) error {
-	return c.retry(ctx, "exec", func(ctx context.Context) error {
+// safe because every command this service emits is idempotent. redact (may
+// be nil) masks secrets in errors before they are logged.
+func (c *Client) exec(ctx context.Context, cmds []string, redact func(error) error) error {
+	return c.retryRedact(ctx, "exec", redact, func(ctx context.Context) error {
 		_, err := c.t.Exec(ctx, cmds)
 		return err
 	})
 }
 
 func (c *Client) retry(ctx context.Context, op string, fn func(context.Context) error) error {
+	return c.retryRedact(ctx, op, nil, fn)
+}
+
+func (c *Client) retryRedact(ctx context.Context, op string, redact func(error) error, fn func(context.Context) error) error {
+	if redact == nil {
+		redact = func(err error) error { return err }
+	}
 	var last error
 	for attempt := 0; attempt <= c.o.Retries; attempt++ {
 		if attempt > 0 {
@@ -194,7 +202,7 @@ func (c *Client) retry(ctx context.Context, op string, fn func(context.Context) 
 				d = 10 * time.Second
 			}
 			d += time.Duration(rand.Int64N(int64(d/4 + 1))) //nolint:gosec // jitter, not security
-			c.o.Logger.Warn("router: retrying", "op", op, "attempt", attempt, "delay", d, "err", last)
+			c.o.Logger.Warn("router: retrying", "op", op, "attempt", attempt, "delay", d, "err", redact(last))
 			if err := c.o.Sleep(ctx, d); err != nil {
 				return err
 			}

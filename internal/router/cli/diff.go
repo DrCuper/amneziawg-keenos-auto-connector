@@ -6,11 +6,13 @@ import (
 
 // Diff computes the plan that moves the router from cur to want.
 //
-// Order of operations, per spec: create groups and set entries → routes →
-// remove routes/groups that are no longer wanted. Entries are compared as sets,
+// Order of operations, per spec: create/update Wireguard interfaces → create groups and set entries → routes →
+// remove routes/groups that are no longer wanted → remove interfaces. Entries are compared as sets,
 // so the router's ordering never produces spurious changes.
 func Diff(cur *router.State, want *router.Desired) *router.Plan {
 	p := &router.Plan{}
+	// Interfaces first: routes below may point at a new interface.
+	diffInterfaces(p, cur, want)
 	wanted := map[string]bool{}
 
 	for _, dg := range want.Groups {
@@ -73,6 +75,7 @@ func Diff(cur *router.State, want *router.Desired) *router.Plan {
 			p.Add(cg.Name, "- object-group fqdn "+cg.Name, DeleteGroup(cg.Name))
 		}
 	}
+	removeInterfaces(p, cur, want.RemoveInterfaces)
 	return p
 }
 

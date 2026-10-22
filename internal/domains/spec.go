@@ -127,7 +127,18 @@ func (sp *Spec) Validate() error {
 		}
 		// Reuse the stage-1 validation of route specs through a throw-away
 		// desired group.
-		d := router.Desired{Groups: []router.DesiredGroup{{Name: "x", RoutesSpec: c.Routes}}}
+		// A `tunnel:` route is checked as an interface route; the tunnel
+		// itself is resolved by the syncer.
+		rs := append([]router.RouteSpec(nil), c.Routes...)
+		for i := range rs {
+			if rs[i].Tunnel != "" {
+				if rs[i].Interface != "" || rs[i].Gateway != "" {
+					errs = append(errs, fmt.Errorf("connection %q: route sets tunnel together with interface or gateway", name))
+				}
+				rs[i].Interface = "Wireguard0"
+			}
+		}
+		d := router.Desired{Groups: []router.DesiredGroup{{Name: "x", RoutesSpec: rs}}}
 		if err := d.Normalize(router.Limits{}); err != nil {
 			errs = append(errs, fmt.Errorf("connection %q: %w", name, err))
 		}

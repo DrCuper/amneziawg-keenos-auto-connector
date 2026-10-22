@@ -1,6 +1,6 @@
-// Package health runs periodic checks — router reachability and external
-// hook commands (used for AWG until stage 4 adds a built-in check) — and
-// feeds their outcome to the alerter.
+// Package health runs periodic checks — router reachability, AWG tunnels
+// (built-in, stage 4) and external hook commands — and feeds their outcome
+// to the alerter.
 package health
 
 import (

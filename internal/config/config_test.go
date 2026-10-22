@@ -177,3 +177,23 @@ func TestStage3Validation(t *testing.T) {
 		}
 	}
 }
+
+func TestAWGValidation(t *testing.T) {
+	cfg := Default()
+	yml := `
+router: {url: http://r, password: p}
+health:
+  checks: [{name: main, command: [/bin/true]}]
+awg:
+  tunnels:
+    - {name: main, conf_file: main.conf}
+    - {name: x, conf: "[Interface]", conf_file: y}
+`
+	err := Parse([]byte(yml), &cfg)
+	if err == nil || !strings.Contains(err.Error(), "awg_down:main") || !strings.Contains(err.Error(), "exactly one of conf_file") {
+		t.Fatalf("err %v", err)
+	}
+	if r := cfg.Redacted(); r.AWG.Tunnels[1].Conf != "***" {
+		t.Errorf("inline conf not redacted: %q", r.AWG.Tunnels[1].Conf)
+	}
+}

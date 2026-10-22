@@ -29,6 +29,11 @@ type Transport struct {
 	Commands []string
 	// Reads counts RunningConfig calls.
 	Reads int
+	// ShowKeys makes running-config print private and preshared keys (most
+	// firmwares do not).
+	ShowKeys bool
+	// Status answers InterfaceStatus by interface name.
+	Status map[string]*router.WGStatus
 	// Closed is set by Close.
 	Closed bool
 
@@ -112,6 +117,7 @@ func (f *Transport) render() string {
 			fmt.Fprintf(&b, "    exclude %s\n", e)
 		}
 	}
+	f.renderInterfaces(&b)
 	if len(f.State.Routes) > 0 {
 		b.WriteString("dns-proxy\n")
 		for _, r := range f.State.Routes {
@@ -135,6 +141,8 @@ func (f *Transport) apply(c string) error {
 		fields = fields[1:]
 	}
 	switch {
+	case len(fields) >= 2 && fields[0] == "interface":
+		return f.applyInterface(neg, fields[1], fields[2:], c)
 	case len(fields) >= 3 && fields[0] == "object-group" && fields[1] == "fqdn":
 		return f.applyGroup(neg, fields[2], fields[3:], c)
 	case len(fields) >= 4 && fields[0] == "dns-proxy" && fields[1] == "route" && fields[2] == "object-group":
