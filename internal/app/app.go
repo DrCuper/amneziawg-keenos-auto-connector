@@ -3,6 +3,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,10 +22,12 @@ import (
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/health"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/notify"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/remote"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/cli"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/rci"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router/sshx"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/server"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/source"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/store"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/syncer"
@@ -42,6 +46,9 @@ type App struct {
 	journal *journal.Journal
 	alerter *notify.Alerter
 	tunnels *awg.Manager
+	servers map[string]*server.Manager
+	// NewRunner overrides how server runners are built (tests).
+	NewRunner func(server.Config) (remote.Runner, error)
 }
 
 // New loads the config file and builds the router client.
@@ -95,8 +102,13 @@ func (a *App) options(save bool) router.Options {
 	}
 }
 
-// Close releases the transport.
-func (a *App) Close() error { return a.Transport.Close() }
+// Close releases the transport and server connections.
+func (a *App) Close() error {
+	for _, m := range a.servers {
+		_ = m.Runner.Close()
+	}
+	return a.Transport.Close()
+}
 
 // OpenStore opens the file store under state_dir.
 func (a *App) OpenStore() (*store.File, error) {
@@ -211,8 +223,89 @@ func (a *App) Tunnels() *awg.Manager {
 	return a.tunnels
 }
 
+// ServerNames lists the configured servers in config order.
+func (a *App) ServerNames() []string {
+	out := make([]string, 0, len(a.Config.Servers))
+	for _, s := range a.Config.Servers {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// Server returns the manager of a configured server, built once. Its state
+// is <state_dir>/servers/<name>.json; relative key and known_hosts paths
+// resolve against the config file's directory.
+func (a *App) Server(name string) (*server.Manager, error) {
+	if m, ok := a.servers[name]; ok {
+		return m, nil
+	}
+	cfg, ok := a.Config.Server(name)
+	if !ok {
+		return nil, fmt.Errorf("unknown server %q (configured: %s)", name, strings.Join(a.ServerNames(), ", "))
+	}
+	cfg.KeyFile = a.resolvePath(cfg.KeyFile)
+	cfg.KnownHostsFile = a.resolvePath(cfg.KnownHostsFile)
+	newRunner := a.NewRunner
+	if newRunner == nil {
+		newRunner = NewRunner
+	}
+	r, err := newRunner(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("server %s: %w", name, err)
+	}
+	m := &server.Manager{
+		Config: cfg,
+		Store:  server.NewStore(filepath.Join(a.Config.StateDir, "servers"), name),
+		Runner: r,
+		Logger: a.Logger,
+	}
+	if a.servers == nil {
+		a.servers = map[string]*server.Manager{}
+	}
+	a.servers[name] = m
+	return m, nil
+}
+
+// DefaultServer resolves an empty name to the only configured server.
+func (a *App) DefaultServer(name string) (string, error) {
+	if name != "" {
+		return name, nil
+	}
+	switch len(a.Config.Servers) {
+	case 0:
+		return "", errors.New("no servers configured (add a `servers:` entry to the config)")
+	case 1:
+		return a.Config.Servers[0].Name, nil
+	default:
+		return "", fmt.Errorf("several servers configured, pick one with --server (%s)", strings.Join(a.ServerNames(), ", "))
+	}
+}
+
+// NewRunner builds the local or SSH runner of a server.
+func NewRunner(c server.Config) (remote.Runner, error) {
+	if c.Local {
+		return remote.Local{Sudo: c.Sudo}, nil
+	}
+	return remote.NewSSH(remote.SSHConfig{
+		Host: c.Host, User: c.User, Password: c.Password, KeyFile: c.KeyFile,
+		KnownHostsFile: c.KnownHostsFile, InsecureHostKey: c.InsecureHostKey, Sudo: c.Sudo,
+	})
+}
+
+func (a *App) resolvePath(p string) string {
+	if p != "" && !filepath.IsAbs(p) && a.ConfigDir != "" {
+		return filepath.Join(a.ConfigDir, p)
+	}
+	return p
+}
+
+// failingChecker reports a server whose runner cannot be built.
+type failingChecker struct{ err error }
+
+func (f failingChecker) Check(context.Context) error { return f.err }
+
 // HealthChecks returns the configured checks: the router first, then AWG
-// tunnels, then hooks.
+// tunnels, then managed servers, then hooks.
 func (a *App) HealthChecks() []health.Check {
 	h := a.Config.Health
 	var out []health.Check
@@ -223,6 +316,18 @@ func (a *App) HealthChecks() []health.Check {
 		if t.Check.IsEnabled() {
 			out = append(out, health.AWGCheck{Tunnel: t, Tunnels: a.Tunnels()})
 		}
+	}
+	for _, sc := range a.Config.Servers {
+		if !sc.CheckEnabled() {
+			continue
+		}
+		var chk health.ServerChecker
+		if m, err := a.Server(sc.Name); err != nil {
+			chk = failingChecker{err}
+		} else {
+			chk = m
+		}
+		out = append(out, health.ServerCheck{Name: sc.Name, Server: chk})
 	}
 	for _, c := range h.Checks {
 		out = append(out, health.CommandCheck{Name: c.Name, Alert: c.Alert, Command: c.Command, Timeout: c.Timeout})
@@ -254,6 +359,9 @@ func (a *App) NewAPI(st store.Store, s *syncer.Syncer, ops *sync.Mutex, checks f
 	}
 	if len(a.Config.AWG.Tunnels) > 0 {
 		srv.Tunnels = a.Tunnels()
+	}
+	if len(a.Config.Servers) > 0 {
+		srv.Servers = a
 	}
 	return srv
 }

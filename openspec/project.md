@@ -18,8 +18,9 @@
 3. **AWG‑подключение на роутере.** Импорт `.conf` Amnezia (ключи, endpoint,
    Jc/Jmin/Jmax/S1/S2/H1–H4), создание/обновление `Wireguard<N>`, проверка
    handshake/трафика/доступности endpoint.
-4. **Управление сервером (позже).** Пиры AWG, выдача IP, клиентские `.conf`/QR,
-   ротация ключей.
+4. **Управление сервером.** Свой сервер AmneziaWG (VPS по SSH или локально):
+   установка, ключи и обфускация, пиры, выдача IP, клиентские `.conf`/QR/`vpn://`,
+   ротация и отзыв ключей — без приложения Amnezia.
 5. **Наблюдаемость и безопасность.** REST API/веб‑интерфейс, журнал изменений,
    метрики и алерты (Telegram/webhook), авторизация API, секреты вне репозитория.
 6. **Эксплуатация.** Один бинарник / Docker‑образ, YAML‑конфиг, идемпотентность.
@@ -49,6 +50,8 @@ internal/notify/        каналы Telegram/webhook, алерты с пода�
 internal/health/        проверки здоровья (роутер, AWG, хуки) и монитор для serve
 internal/awg/           разбор .conf/vpn://, импорт туннелей в Wireguard<N>, оценка handshake
 internal/api/           REST API, метрики, встроенный веб‑интерфейс
+internal/server/        свой сервер AmneziaWG: состояние, пиры, рендер, деплой, статус
+internal/remote/        выполнение shell-скриптов локально и по SSH
 internal/router/        Доменная модель роутера: State, Desired*, Plan, Client
 internal/router/rci/    Транспорт RCI (HTTP, challenge‑response auth)
 internal/router/sshx/   Транспорт SSH (CLI через exec)

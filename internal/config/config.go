@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/server"
 )
 
 // Environment variables that override secrets in the YAML file.
@@ -47,6 +48,8 @@ type Config struct {
 	Health   Health  `yaml:"health"`
 	AWG      AWG     `yaml:"awg"`
 	API      API     `yaml:"api"`
+	// Servers are AmneziaWG servers managed by awgkeen (stage 6).
+	Servers []server.Config `yaml:"servers"`
 }
 
 // API configures the REST API and web UI of `serve` (stage 5).
@@ -380,6 +383,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, err)
 	}
 	errs = append(errs, c.API.validate()...)
+	if err := server.ValidateAll(c.Servers); err != nil {
+		errs = append(errs, err)
+	}
 	for _, t := range c.AWG.Tunnels {
 		for _, ch := range c.Health.Checks {
 			if ch.Name == t.Name && (ch.Alert == "" || ch.Alert == "awg_down") {
@@ -517,5 +523,24 @@ func (c Config) Redacted() Config {
 		}
 		c.AWG.Tunnels = ts
 	}
+	if len(c.Servers) > 0 {
+		ss := append([]server.Config(nil), c.Servers...)
+		for i := range ss {
+			if ss[i].Password != "" {
+				ss[i].Password = "***"
+			}
+		}
+		c.Servers = ss
+	}
 	return c
+}
+
+// Server returns the named server with defaults applied.
+func (c *Config) Server(name string) (server.Config, bool) {
+	for _, s := range c.Servers {
+		if s.Name == name {
+			return s.WithDefaults(), true
+		}
+	}
+	return server.Config{}, false
 }

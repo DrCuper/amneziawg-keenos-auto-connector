@@ -23,6 +23,14 @@ const (
 	// KindAWGApply / KindAWGRemove are AWG tunnel imports and removals.
 	KindAWGApply  = "awg-apply"
 	KindAWGRemove = "awg-remove"
+	// Server kinds (stage 6): deploys and peer changes of a managed server.
+	KindServerInit   = "server-init"
+	KindServerDeploy = "server-deploy"
+	KindPeerAdd      = "peer-add"
+	KindPeerRemove   = "peer-remove"
+	KindPeerRotate   = "peer-rotate"
+	KindPeerDisable  = "peer-disable"
+	KindPeerEnable   = "peer-enable"
 )
 
 // Entry statuses.
@@ -56,6 +64,10 @@ type Entry struct {
 	ChangesOmitted int      `json:"changes_omitted,omitempty"`
 
 	Manual *Manual `json:"manual,omitempty"`
+
+	// Server and Peer name the managed server and client (server kinds).
+	Server string `json:"server,omitempty"`
+	Peer   string `json:"peer,omitempty"`
 }
 
 // Group is the per-group part of an entry.
@@ -221,4 +233,21 @@ func ParseSince(s string, now time.Time) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("%q: want a duration (24h, 7d) or a date (2026-10-20)", s)
+}
+
+// FromServer builds an entry for a managed-server operation (stage 6).
+// changes are deploy plan lines; they are kept under Kind "server".
+func FromServer(kind, trigger, srv, peer string, started time.Time, dryRun bool, changes []string, err error) *Entry {
+	e := &Entry{
+		Time: started.UTC(), Kind: kind, Trigger: trigger, DryRun: dryRun,
+		DurationMS: time.Since(started).Milliseconds(), Status: status(nil, err),
+		Server: srv, Peer: peer, Changed: err == nil && (len(changes) > 0 || kind != KindServerDeploy),
+	}
+	if err != nil {
+		e.Error = err.Error()
+	}
+	for _, c := range changes {
+		e.Changes = append(e.Changes, Change{Group: srv, Text: c, Kind: "server"})
+	}
+	return e
 }

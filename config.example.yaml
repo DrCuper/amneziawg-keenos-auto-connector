@@ -50,7 +50,7 @@ journal:
   max_entries: 5000             # and keep at most this many (0 = unlimited)
   max_changes: 500              # diff lines stored per entry
 
-# Alerts: router_unreachable, sync_failed, awg_down:<tunnel|check>. One message per
+# Alerts: router_unreachable, sync_failed, awg_down:<tunnel|check>, server_down:<server>. One message per
 # incident, reminders every repeat_interval, "resolved" on recovery.
 notify:
   telegram:
@@ -103,6 +103,29 @@ awg:
   #    check:
   #      enabled: true
   #      max_handshake_age: 5m             # older handshake -> awg_down:main
+
+# Your own AmneziaWG servers (`awgkeen server ...`, `awgkeen peer ...`): a VPS
+# over SSH or this machine. awgkeen keeps the keys and peers in
+# state_dir/servers/<name>.json (0600) and renders /etc/amnezia/amneziawg/<if>.conf.
+servers: []
+#  - name: vps
+#    host: 203.0.113.10            # host[:port]; or `local: true` for this machine
+#    user: root                    # non-root: set sudo: true (passwordless sudo)
+#    key_file: /etc/awgkeen/vps_ed25519   # or password: ...
+#    known_hosts_file: /etc/awgkeen/known_hosts   # ssh-keyscan 203.0.113.10 > known_hosts
+#    # insecure_host_key: false
+#    endpoint: vpn.example.com     # public host[:port] written into client configs (required)
+#    listen_port: 51820
+#    subnet: 10.8.1.0/24           # the server takes .1, clients .2, .3, ...
+#    interface: awg0
+#    # nat_interface: eth0         # default: the device of the default route
+#    dns: [1.1.1.1, 1.0.0.1]       # client configs
+#    allowed_ips: [0.0.0.0/0]      # client configs
+#    mtu: 1376
+#    keepalive: 25
+#    awg2: false                   # AmneziaWG 2.0 parameters (all sides need amneziawg >= 2.0)
+#    health_check: true            # serve: alert server_down:vps when the interface is down
+#    timeout: 2m                   # per remote command
 
 # REST API, /metrics and the web UI of `awgkeen serve`.
 api:

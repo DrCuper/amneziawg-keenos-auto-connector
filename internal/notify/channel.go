@@ -32,7 +32,7 @@ const (
 // Message is what channels deliver; it is also the webhook JSON body.
 type Message struct {
 	Event    string     `json:"event"`
-	Alert    string     `json:"alert,omitempty"` // router_unreachable, sync_failed, awg_down
+	Alert    string     `json:"alert,omitempty"` // router_unreachable, sync_failed, awg_down, server_down
 	Key      string     `json:"key,omitempty"`   // alert + optional ":<check>"
 	Title    string     `json:"title"`
 	Text     string     `json:"text,omitempty"`

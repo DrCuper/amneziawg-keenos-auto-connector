@@ -22,6 +22,7 @@ const (
 	AlertRouterUnreachable = "router_unreachable"
 	AlertSyncFailed        = "sync_failed"
 	AlertAWGDown           = "awg_down"
+	AlertServerDown        = "server_down"
 )
 
 // maxDetail bounds the error text kept in state and sent in messages.
@@ -274,6 +275,7 @@ func title(alert, check string) string {
 		AlertRouterUnreachable: "Router unreachable",
 		AlertSyncFailed:        "Sync failed",
 		AlertAWGDown:           "AWG down",
+		AlertServerDown:        "AWG server down",
 	}[alert]
 	if t == "" {
 		t = alert

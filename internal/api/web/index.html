@@ -55,7 +55,7 @@ textarea { width: 100%; min-height: 60px; }
 <div id="msg"></div>
 <script>
 "use strict";
-const tabs = [["overview", "Обзор"], ["groups", "Группы"], ["journal", "Журнал"], ["tunnels", "Туннели"], ["router", "Роутер"]];
+const tabs = [["overview", "Обзор"], ["groups", "Группы"], ["journal", "Журнал"], ["tunnels", "Туннели"], ["servers", "Сервер"], ["router", "Роутер"]];
 let token = "";
 try { token = localStorage.getItem("awgkeen.token") || ""; } catch (e) {}
 const $ = (s) => document.querySelector(s);
@@ -80,6 +80,23 @@ async function api(method, path, body) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok && !("ok" in data)) throw new Error(data.error || ("HTTP " + r.status));
   return data;
+}
+// apiRaw fetches a non-JSON resource (client configs, QR codes).
+async function apiRaw(path) {
+  const h = {};
+  if (token) h["Authorization"] = "Bearer " + token;
+  const r = await fetch("/api/v1" + path, { headers: h });
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || ("HTTP " + r.status)); }
+  return r;
+}
+const dataURL = (blob) => new Promise((ok, fail) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = fail; fr.readAsDataURL(blob); });
+const bytes = (n) => n == null ? "—" : n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KiB" : n < 1073741824 ? (n / 1048576).toFixed(1) + " MiB" : (n / 1073741824).toFixed(2) + " GiB";
+function deployResult(res) {
+  const box = el("div", {});
+  box.append(el("div", {}, status(res.ok, res.ok ? "готово" : res.error)));
+  const d = res.deploy;
+  if (d) box.append(el("pre", {}, d.changes && d.changes.length ? (d.applied ? "применено на сервере:\n" : "изменения:\n") + d.changes.join("\n") + (d.restart ? "\n(перезапуск интерфейса)" : "") : "сервер в актуальном состоянии"));
+  return box;
 }
 const fmtTime = (t) => t ? new Date(t).toLocaleString() : "—";
 const status = (ok, text) => el("span", { class: ok ? "ok" : "bad" }, text || (ok ? "ok" : "ошибка"));
@@ -107,6 +124,7 @@ const views = {
       el("div", { class: "kpis" },
         el("div", { class: "kpi" }, "Группы", el("b", {}, s.groups)),
         el("div", { class: "kpi" }, "Туннели", el("b", {}, s.tunnels)),
+        el("div", { class: "kpi" }, "Серверы", el("b", {}, s.servers || 0)),
         el("div", { class: "kpi" }, "Активные алерты", el("b", { class: s.active_alerts.length ? "bad" : "ok" }, s.active_alerts.length)),
         el("div", { class: "kpi" }, "Последняя синхронизация", el("b", { class: s.last_sync && s.last_sync.status === "ok" ? "ok" : "bad" }, s.last_sync ? s.last_sync.status : "—"),
           el("span", { class: "muted" }, s.last_sync ? fmtTime(s.last_sync.time) : ""))),
@@ -130,7 +148,7 @@ const views = {
 
   async journal(v) {
     const form = el("div", { class: "row" });
-    const group = el("input", { placeholder: "группа" }), kind = el("select", {}, ["", "sync", "rollback", "manual", "router-apply", "awg-apply", "awg-remove"].map((k) => el("option", { value: k }, k || "все виды")));
+    const group = el("input", { placeholder: "группа" }), kind = el("select", {}, ["", "sync", "rollback", "manual", "router-apply", "awg-apply", "awg-remove", "server-init", "server-deploy", "peer-add", "peer-remove", "peer-rotate", "peer-disable", "peer-enable"].map((k) => el("option", { value: k }, k || "все виды")));
     const st = el("select", {}, ["", "ok", "partial", "failed", "skipped"].map((k) => el("option", { value: k }, k || "любой результат")));
     const since = el("input", { placeholder: "за период: 7d", size: 10 });
     const go = el("button", { class: "act" }, "Показать");
@@ -172,6 +190,12 @@ const views = {
     v.append(card("Импорт", el("div", { class: "row" }, plan, apply), out));
   },
 
+  async servers(v) {
+    const ss = await api("GET", "/servers");
+    if (!ss.length) { v.append(card("Сервер", el("p", { class: "muted" }, "Серверы не настроены: добавьте секцию servers: в config.yaml и выполните awgkeen server init / install / deploy."))); return; }
+    for (const srv of ss) v.append(await serverCard(srv));
+  },
+
   async router(v) {
     const s = await api("GET", "/router");
     v.append(card("Группы на роутере", table(["Группа", "include", "exclude", "Описание"], (s.groups || []).map((g) => [g.name, g.include, g.exclude, g.description || ""]))));
@@ -179,6 +203,57 @@ const views = {
     v.append(card("Wireguard", table(["Интерфейс", "Адрес", "Up", "ASC", "Пиры"], (s.interfaces || []).map((i) => [i.name + (i.description ? " — " + i.description : ""), i.address || "—", i.up ? "да" : "нет", (i.asc || []).join(" "), (i.peers || []).length]))));
   },
 };
+
+async function serverCard(srv) {
+  const base = "/servers/" + encodeURIComponent(srv.name);
+  const c = card("Сервер " + srv.name);
+  c.append(el("p", {}, (srv.local ? "эта машина" : srv.host) + " → клиенты подключаются к " + srv.endpoint + ", сеть " + srv.subnet + ", интерфейс " + srv.interface));
+  if (srv.error) { c.append(el("p", { class: "bad" }, srv.error)); return c; }
+  if (!srv.initialized) { c.append(el("p", { class: "muted" }, "Не инициализирован: выполните awgkeen server init -s " + srv.name + ", затем server install и server deploy.")); return c; }
+  c.append(el("p", { class: "muted" }, "Публичный ключ " + srv.public_key + "; развёрнут " + fmtTime(srv.deployed_at)));
+  const stBox = el("div", {}, el("p", { class: "muted" }, "Опрос сервера…"));
+  const out = el("div", {}), cfgBox = el("div", {});
+  const btn = (label, fn, primary) => { const b = el("button", { class: "act" + (primary ? " primary" : "") }, label); b.onclick = () => run(b, fn); return b; };
+  const reload = () => route("servers");
+  const enc = encodeURIComponent;
+  const showConf = async (peer) => {
+    const p = base + "/peers/" + enc(peer);
+    const [conf, qr, vpn] = await Promise.all([apiRaw(p + "/conf").then((r) => r.text()), apiRaw(p + "/qr.png").then((r) => r.blob()).then(dataURL), apiRaw(p + "/vpn").then((r) => r.text())]);
+    const dl = el("a", { href: "data:text/plain;charset=utf-8," + encodeURIComponent(conf), download: srv.name + "-" + peer + ".conf" }, "скачать .conf");
+    cfgBox.replaceChildren(card("Клиент " + peer,
+      el("p", { class: "muted" }, "QR-код — для приложения AmneziaWG; .conf — для AmneziaWG на ПК или импорта на роутер; vpn:// — для AmneziaVPN. Это секрет: не публикуйте."),
+      el("img", { src: qr, alt: "QR " + peer, width: 256, height: 256 }), el("p", {}, dl),
+      el("pre", {}, conf), el("pre", { style: "white-space: pre-wrap; word-break: break-all" }, vpn)));
+  };
+  try {
+    const [peers, st] = await Promise.all([api("GET", base + "/peers"), api("GET", base + "/status").catch((e) => ({ error: e.message }))]);
+    const rt = {};
+    for (const p of (st.peers || [])) if (p.name) rt[p.name] = p;
+    stBox.replaceChildren(
+      el("p", {}, st.error ? status(false, st.error) : status(st.up, st.up ? "интерфейс поднят, порт " + st.listen_port : "интерфейс не поднят")),
+      table(["Клиент", "Адрес", "Статус", "Handshake", "rx / tx", ""], peers.map((p) => {
+        const r = rt[p.name] || {};
+        const hs = r.last_handshake ? Math.round((Date.now() - new Date(r.last_handshake)) / 1000) + " с назад" : "никогда";
+        return [p.name, p.address, p.disabled ? status(false, "отключён") : "активен", hs, bytes(r.rx_bytes) + " / " + bytes(r.tx_bytes),
+          el("div", { class: "row" },
+            btn("Конфиг", () => showConf(p.name)),
+            btn(p.disabled ? "Включить" : "Отключить", async () => { out.replaceChildren(deployResult(await api("POST", base + "/peers/" + enc(p.name) + (p.disabled ? "/enable" : "/disable"), {}))); reload(); }),
+            btn("Новые ключи", async () => { if (!confirm("Выпустить новые ключи для " + p.name + "? Старый конфиг перестанет работать.")) return; out.replaceChildren(deployResult(await api("POST", base + "/peers/" + enc(p.name) + "/rotate", {}))); await showConf(p.name); }),
+            btn("Удалить", async () => { if (!confirm("Удалить клиента " + p.name + "? Его ключи будут забыты.")) return; out.replaceChildren(deployResult(await api("DELETE", base + "/peers/" + enc(p.name)))); reload(); }))];
+      })));
+  } catch (e) { stBox.replaceChildren(el("p", { class: "bad" }, e.message)); }
+  const name = el("input", { placeholder: "имя клиента, например phone-ivan" });
+  const add = btn("Выдать ключ", async () => {
+    const n = name.value.trim(); if (!n) return;
+    const res = await api("POST", base + "/peers", { name: n });
+    out.replaceChildren(deployResult(res));
+    if (res.peer) await showConf(n);
+  }, true);
+  const plan = btn("План развёртывания", async () => out.replaceChildren(deployResult(await api("POST", base + "/deploy", { dry_run: true }))));
+  const deploy = btn("Развернуть", async () => { if (!confirm("Записать конфигурацию на сервер " + srv.name + "?")) return; out.replaceChildren(deployResult(await api("POST", base + "/deploy", {}))); });
+  c.append(stBox, el("div", { class: "row" }, name, add, plan, deploy), out, cfgBox);
+  return c;
+}
 
 async function groupView(name) {
   const v = $("#view");

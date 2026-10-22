@@ -172,6 +172,12 @@ func groupsSummary(e *journal.Entry) string {
 	if e.Manual != nil {
 		return e.Manual.Group
 	}
+	if e.Server != "" {
+		if e.Peer != "" {
+			return e.Server + "/" + e.Peer
+		}
+		return e.Server
+	}
 	var parts []string
 	for _, g := range e.Groups {
 		if g.Error != "" {
@@ -210,6 +216,13 @@ func entrySummary(e *journal.Entry) string {
 		}
 	case e.Error != "" && e.Status != journal.StatusPartial:
 		s = e.Error
+	case e.Server != "" && len(e.Changes) > 0:
+		s = fmt.Sprintf("%d change(s)", len(e.Changes))
+		if e.DryRun {
+			s += " planned"
+		}
+	case e.Server != "" && e.Kind != journal.KindServerDeploy:
+		s = "done"
 	case e.DryRun && e.Commands > 0:
 		s = fmt.Sprintf("%d command(s) planned", e.Commands)
 	case e.Applied > 0:
@@ -234,6 +247,13 @@ func printEntry(w io.Writer, e *journal.Entry) {
 	fmt.Fprintf(w, "time: %s, took %s\n", e.Time.Local().Format(time.RFC3339), (time.Duration(e.DurationMS) * time.Millisecond).String())
 	if e.Error != "" {
 		fmt.Fprintf(w, "error: %s\n", e.Error)
+	}
+	if e.Server != "" {
+		fmt.Fprintf(w, "server %s", e.Server)
+		if e.Peer != "" {
+			fmt.Fprintf(w, ", peer %s", e.Peer)
+		}
+		fmt.Fprintln(w)
 	}
 	if m := e.Manual; m != nil {
 		fmt.Fprintf(w, "manual %s on group %s", m.Op, m.Group)
@@ -273,9 +293,12 @@ func printEntry(w io.Writer, e *journal.Entry) {
 		for _, c := range e.Changes {
 			if key := c.Kind + "|" + c.Group; key != cur {
 				cur = key
-				if c.Kind == router.KindInterface {
+				switch c.Kind {
+				case router.KindInterface:
 					fmt.Fprintf(w, "interface %s:\n", c.Group)
-				} else {
+				case "server":
+					fmt.Fprintf(w, "server %s:\n", c.Group)
+				default:
 					fmt.Fprintf(w, "group %s:\n", c.Group)
 				}
 			}

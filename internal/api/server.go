@@ -1,6 +1,6 @@
 // Package api serves the REST API and the web UI of `awgkeen serve`: groups,
 // versions and manual edits, sync and rollback, the change journal, alerts,
-// health checks, the router's state and AWG tunnels. It is a thin layer over
+// health checks, the router's state, AWG tunnels and managed servers. It is a thin layer over
 // the same components the CLI uses; it adds authentication and keeps
 // mutating operations from overlapping with the scheduler.
 package api
@@ -47,6 +47,7 @@ type Server struct {
 	Journal  *journal.Journal // nil = journal disabled
 	Alerter  *notify.Alerter
 	Tunnels  *awg.Manager // nil or empty = no tunnels configured
+	Servers  ServerOps    // nil = no managed servers
 	Router   StateReader
 	// Checks returns the latest health results (nil = none yet).
 	Checks func() []health.Result
@@ -112,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	read("GET /api/v1/tunnels", s.tunnels)
 	read("GET /api/v1/tunnels/status", s.tunnelStatus)
 	write("POST /api/v1/tunnels/apply", s.tunnelApply)
+	s.serverRoutes(read, write, func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(true, h)) })
 	read("GET /metrics", s.metrics)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("no such endpoint"))
@@ -173,7 +175,7 @@ func equal(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []by
 func (s *Server) exclusive(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.Ops.TryLock() {
-			writeError(w, http.StatusConflict, errors.New("another operation (sync, rollback, tunnel apply) is in progress"))
+			writeError(w, http.StatusConflict, errors.New("another operation (sync, rollback, tunnel apply, server deploy) is in progress"))
 			return
 		}
 		defer s.Ops.Unlock()

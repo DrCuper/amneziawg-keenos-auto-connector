@@ -7,9 +7,9 @@
 сервиса и план этапов — в [`openspec/project.md`](openspec/project.md),
 спецификации — в `openspec/specs/`, предложения — в `openspec/changes/`.
 
-**Статус:** этапы 1–5 (клиент роутера, группы и синхронизация, журнал и
-уведомления, импорт AmneziaWG, REST API и веб‑интерфейс) реализованы и
-заархивированы в `openspec/specs/`.
+**Статус:** все шесть этапов (клиент роутера, группы и синхронизация, журнал и
+уведомления, импорт AmneziaWG, REST API и веб‑интерфейс, свой сервер
+AmneziaWG и выдача ключей) реализованы и заархивированы в `openspec/specs/`.
 
 ## Что умеет сейчас
 
@@ -56,6 +56,12 @@
   версии, ручные правки, откат, синхронизация, журнал, алерты, проверки,
   туннели, состояние роутера, `/metrics` для Prometheus. Bearer‑токены
   (полный и только чтение), без токена — только localhost.
+* **Свой сервер AmneziaWG без приложения Amnezia**: VPS по SSH или эта же
+  машина. Установка amneziawg (Ubuntu), ключи и параметры обфускации, NAT,
+  выдача клиентов одной командой — `.conf`, QR‑код и ключ `vpn://` для
+  AmneziaVPN; отключение, ротация ключей, отзыв; изменения пиров без разрыва
+  соединений; состояние и алерт `server_down`. Выданный конфиг сразу
+  импортируется на роутер.
 
 ## Установка
 
@@ -136,6 +142,11 @@ awgkeen awg plan                          # что изменится на ро�
 awgkeen awg apply [main] [--force-keys]   # создать/обновить Wireguard-интерфейс, проверить, сохранить
 awgkeen awg status                        # интерфейс, пиры, handshake, трафик
 awgkeen awg remove main                   # удалить интерфейс туннеля (только созданный awgkeen)
+
+awgkeen server init|install|deploy        # свой сервер AmneziaWG (см. раздел ниже)
+awgkeen server list|plan|status
+awgkeen peer add phone --qr               # выдать ключ: .conf / --qr / --vpn / --png FILE
+awgkeen peer list|show|rotate|disable|enable|remove NAME
 
 awgkeen router show                       # группы и маршруты на роутере
 awgkeen router show --raw                 # весь running-config
@@ -260,6 +271,46 @@ J1–J3/Itime игнорируются с предупреждением. `awgke
 туннели при старте (`awg.apply_on_start`) и проверяет их каждые
 `health.interval`.
 
+## Свой сервер AmneziaWG
+
+Сервер и ключи к нему — без приложения AmneziaVPN. Нужен VPS (Ubuntu 22.04/24.04
+для автоматической установки) с доступом root по SSH или пользователь с
+`sudo` без пароля; UDP‑порт `listen_port` должен быть открыт.
+
+```yaml
+servers:
+  - name: vps
+    host: 203.0.113.10
+    key_file: /etc/awgkeen/vps_ed25519
+    known_hosts_file: /etc/awgkeen/known_hosts   # ssh-keyscan 203.0.113.10 > known_hosts
+    endpoint: 203.0.113.10                        # или DNS-имя; клиенты подключаются сюда
+```
+
+```sh
+awgkeen server init                 # ключи, адрес 10.8.1.1, параметры Jc/Jmin/Jmax/S1/S2/H1–H4
+awgkeen server install              # amneziawg из PPA Amnezia (один раз)
+awgkeen server deploy               # конфиг, NAT, ip_forward, awg-quick@awg0
+awgkeen peer add phone --qr         # новый клиент: QR для приложения AmneziaWG
+awgkeen peer add laptop > laptop.conf
+awgkeen peer show phone --vpn       # ключ vpn:// для AmneziaVPN
+awgkeen peer show phone --png phone.png
+awgkeen peer add keenetic > /etc/awgkeen/main.conf   # и в awg.tunnels: conf_file этого файла
+awgkeen peer list                   # адреса, handshake, трафик
+awgkeen peer rotate phone           # новые ключи, старый конфиг перестаёт работать
+awgkeen peer disable phone          # временно заблокировать; enable — вернуть
+awgkeen peer remove phone           # отозвать навсегда
+awgkeen server plan | status        # что изменится на хосте / состояние интерфейса
+```
+
+`peer add/remove/rotate/disable/enable` сразу разворачивают конфиг
+(`--no-deploy` — только локально). Изменения клиентов применяются через
+`awg syncconf` без разрыва остальных; смена ключей или параметров сервера
+(`server init --force`) перезапускает интерфейс и требует перевыпуска всех
+клиентов. Ключи хранятся в `state_dir/servers/<name>.json` (0600), чтобы
+конфиг можно было выдать повторно. При нескольких серверах — `--server NAME`.
+`local: true` управляет машиной, где запущен `awgkeen`. Если сервер не
+поднят, `serve` шлёт алерт `server_down:<name>`. Все операции — в журнале.
+
 ## REST API и веб‑интерфейс
 
 ```yaml
@@ -294,6 +345,11 @@ curl -H "$H" http://host:8080/metrics
 | `GET /api/v1/journal[?group&kind&status&since&dry_run&limit]`, `/journal/{id}` | журнал |
 | `GET /api/v1/alerts`, `/checks`, `/router` | алерты, проверки, состояние роутера (без ключей) |
 | `GET /api/v1/tunnels`, `/tunnels/status`; `POST /api/v1/tunnels/apply` | AWG‑туннели |
+| `GET /api/v1/servers`, `/servers/{s}/status`, `/servers/{s}/peers` | серверы, состояние, клиенты (без ключей) |
+| `POST /api/v1/servers/{s}/peers` | `{"name":"phone","deploy":true}` — выдать ключ |
+| `POST /api/v1/servers/{s}/peers/{p}/rotate`, `/disable`, `/enable`; `DELETE /api/v1/servers/{s}/peers/{p}` | операции с клиентом (`{"deploy":false}` — без деплоя) |
+| `POST /api/v1/servers/{s}/deploy` | `{"dry_run":false}` |
+| `GET /api/v1/servers/{s}/peers/{p}/conf`, `/qr.png`, `/vpn` | конфиг клиента — только полный токен |
 | `GET /metrics` | Prometheus |
 
 Изменяющие запросы, cron и импорт при старте выполняются по одному: если
@@ -327,6 +383,8 @@ internal/notify/      Telegram/webhook, алерты с подавлением �
 internal/health/      проверки здоровья: роутер, AWG-туннели, хуки-команды; монитор для serve
 internal/awg/         разбор .conf / vpn://, импорт туннелей, оценка handshake
 internal/api/         REST API, метрики, встроенный веб-интерфейс (web/index.html)
+internal/server/      свой сервер AmneziaWG: ключи, пиры, рендер, деплой, статус, vpn:// и QR
+internal/remote/      выполнение скриптов локально и по SSH
 internal/router/      модель, план (дифф), Client: lock → read → backup → plan → apply → verify → save
 internal/router/cli/  парсер running-config и генерация команд
 internal/router/rci/  транспорт RCI
@@ -343,8 +401,10 @@ make lint   # golangci-lint
 openspec validate --strict
 ```
 
-Тесты не требуют сети и реального роутера.
+Тесты не требуют сети, реального роутера и VPS.
 
 ## Дорожная карта
 
-См. таблицу этапов в [`openspec/project.md`](openspec/project.md): управление сервером AmneziaWG и пирами.
+Все этапы из [`openspec/project.md`](openspec/project.md) реализованы. Не
+проверено на реальном оборудовании: применение на роутере (этапы 1–5) и
+развёртывание на настоящем VPS (этап 6).

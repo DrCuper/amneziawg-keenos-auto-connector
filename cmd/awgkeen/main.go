@@ -43,7 +43,8 @@ func newRoot() *cobra.Command {
 	}
 	root.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.yaml", "path to YAML config")
 	root.AddCommand(newRouterCmd(&cfgPath), newSyncCmd(&cfgPath), newServeCmd(&cfgPath), newGroupsCmd(&cfgPath),
-		newJournalCmd(&cfgPath), newNotifyCmd(&cfgPath), newHealthCmd(&cfgPath), newAWGCmd(&cfgPath))
+		newJournalCmd(&cfgPath), newNotifyCmd(&cfgPath), newHealthCmd(&cfgPath), newAWGCmd(&cfgPath),
+		newServerCmd(&cfgPath), newPeerCmd(&cfgPath))
 	return root
 }
 

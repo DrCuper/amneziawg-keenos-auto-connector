@@ -606,6 +606,7 @@ type Status struct {
 	Started  time.Time        `json:"started"`
 	Groups   int              `json:"groups"`
 	Tunnels  int              `json:"tunnels"`
+	Servers  int              `json:"servers"`
 	LastSync *journal.Entry   `json:"last_sync,omitempty"`
 	Alerts   []map[string]any `json:"active_alerts"`
 	Checks   []CheckResult    `json:"checks"`
@@ -618,6 +619,9 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.Tunnels != nil {
 		st.Tunnels = len(s.Tunnels.Tunnels)
+	}
+	if s.Servers != nil {
+		st.Servers = len(s.Servers.ServerNames())
 	}
 	if s.Journal != nil {
 		if es, err := s.Journal.Query(journal.Filter{Kind: syncer.KindSync, Limit: 1}); err == nil && len(es) > 0 {

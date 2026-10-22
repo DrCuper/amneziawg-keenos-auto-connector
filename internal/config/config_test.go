@@ -224,3 +224,25 @@ func TestAPIValidation(t *testing.T) {
 		t.Error("token not redacted")
 	}
 }
+
+func TestServersValidation(t *testing.T) {
+	t.Setenv(EnvRouterPassword, "")
+	base := "router:\n  url: http://r\n  password: p\n"
+	cfg := Default()
+	err := Parse([]byte(base+"servers:\n  - name: vps\n    host: 203.0.113.10\n    password: sshpw\n    known_hosts_file: kh\n    endpoint: vpn.example.com\n    timeout: 30s\n  - name: home\n    local: true\n    endpoint: home.example.net:51821\n    subnet: 10.9.0.0/24\n"), &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := cfg.Server("home")
+	if !ok || s.Interface != "awg0" || s.ListenPort != 51820 || s.MTU != 1376 || !s.CheckEnabled() {
+		t.Errorf("server defaults %+v", s)
+	}
+	if r := cfg.Redacted(); r.Servers[0].Password != "***" || cfg.Servers[0].Password != "sshpw" {
+		t.Error("server password not redacted")
+	}
+	cfg = Default()
+	err = Parse([]byte(base+"servers:\n  - name: vps\n    host: h\n    endpoint: e\n"), &cfg)
+	if err == nil || !strings.Contains(err.Error(), "key_file or password") || !strings.Contains(err.Error(), "known_hosts_file") {
+		t.Errorf("err %v", err)
+	}
+}
