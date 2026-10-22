@@ -145,20 +145,11 @@ func newJournalCmd(cfgPath *string) *cobra.Command {
 
 // parseSince accepts a duration (90m, 24h, 7d) or a date/time.
 func parseSince(s string, now time.Time) (time.Time, error) {
-	if n, ok := strings.CutSuffix(s, "d"); ok {
-		if d, err := strconv.Atoi(n); err == nil && d >= 0 {
-			return now.Add(-time.Duration(d) * 24 * time.Hour), nil
-		}
+	t, err := journal.ParseSince(s, now)
+	if err != nil {
+		return t, fmt.Errorf("--since %w", err)
 	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return now.Add(-d), nil
-	}
-	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("--since %q: want a duration (24h, 7d) or a date (2026-10-20)", s)
+	return t, nil
 }
 
 func mode(e *journal.Entry) string {

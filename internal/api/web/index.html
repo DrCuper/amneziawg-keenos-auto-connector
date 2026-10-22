@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>awgkeen</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+  --accent: #2f6fde; --ok: #1f8a4c; --bad: #c4372d; --warn: #b7791f; --code: #f0f2f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171c; --panel: #1c2027; --text: #e6e8ec; --muted: #98a1b0; --line: #2c323c;
+    --accent: #6c9ff0; --ok: #4cc27f; --bad: #ef6b60; --warn: #e0a84a; --code: #232831; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0 8px 0 0; }
+nav { display: flex; flex-wrap: wrap; gap: 4px; }
+nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
+nav button.on { background: var(--code); color: var(--text); }
+.spacer { flex: 1; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.scroll { overflow-x: auto; }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+pre { background: var(--code); padding: 10px; border-radius: 8px; overflow: auto; max-height: 420px; margin: 8px 0 0; font-size: 12px; }
+button.act, input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+button.act { cursor: pointer; }
+button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.act:disabled { opacity: .5; cursor: default; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.kpi { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.kpi b { display: block; font-size: 20px; }
+a { color: var(--accent); cursor: pointer; }
+#msg { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; display: none; max-width: 90vw; }
+textarea { width: 100%; min-height: 60px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>awgkeen</h1>
+  <nav id="tabs"></nav>
+  <span class="spacer"></span>
+  <input id="token" type="password" placeholder="API token" autocomplete="off" size="18">
+  <button class="act" id="saveToken">Сохранить</button>
+</header>
+<main id="view"></main>
+<div id="msg"></div>
+<script>
+"use strict";
+const tabs = [["overview", "Обзор"], ["groups", "Группы"], ["journal", "Журнал"], ["tunnels", "Туннели"], ["router", "Роутер"]];
+let token = "";
+try { token = localStorage.getItem("awgkeen.token") || ""; } catch (e) {}
+const $ = (s) => document.querySelector(s);
+$("#token").value = token;
+$("#saveToken").onclick = () => { token = $("#token").value.trim(); try { localStorage.setItem("awgkeen.token", token); } catch (e) {} route(); };
+
+// el builds DOM nodes; strings become text nodes, so data is never parsed as HTML.
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith("on")) n[k] = v; else if (v !== false && v != null) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k != null) n.append(k instanceof Node ? k : String(k));
+  return n;
+}
+function toast(t) { const m = $("#msg"); m.textContent = t; m.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(() => m.style.display = "none", 4000); }
+async function api(method, path, body) {
+  const h = { "Accept": "application/json" };
+  if (token) h["Authorization"] = "Bearer " + token;
+  if (body !== undefined) h["Content-Type"] = "application/json";
+  const r = await fetch("/api/v1" + path, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok && !("ok" in data)) throw new Error(data.error || ("HTTP " + r.status));
+  return data;
+}
+const fmtTime = (t) => t ? new Date(t).toLocaleString() : "—";
+const status = (ok, text) => el("span", { class: ok ? "ok" : "bad" }, text || (ok ? "ok" : "ошибка"));
+function card(title, ...kids) { return el("section", { class: "card" }, el("h2", {}, title), ...kids); }
+function table(head, rows) {
+  return el("div", { class: "scroll" }, el("table", {}, el("thead", {}, el("tr", {}, head.map((h) => el("th", {}, h)))),
+    el("tbody", {}, rows.length ? rows.map((r) => el("tr", {}, r.map((c) => el("td", {}, c)))) : el("tr", {}, el("td", { colspan: head.length, class: "muted" }, "пусто")))));
+}
+function opResult(res) {
+  const box = el("div", {});
+  box.append(el("div", {}, status(res.ok, res.ok ? "готово" : res.error)));
+  if (res.summary) box.append(el("pre", {}, res.summary));
+  if (res.plan) box.append(el("pre", {}, res.plan));
+  return box;
+}
+async function run(btn, fn) {
+  btn.disabled = true;
+  try { return await fn(); } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+}
+
+const views = {
+  async overview(v) {
+    const s = await api("GET", "/status");
+    v.append(card("Состояние",
+      el("div", { class: "kpis" },
+        el("div", { class: "kpi" }, "Группы", el("b", {}, s.groups)),
+        el("div", { class: "kpi" }, "Туннели", el("b", {}, s.tunnels)),
+        el("div", { class: "kpi" }, "Активные алерты", el("b", { class: s.active_alerts.length ? "bad" : "ok" }, s.active_alerts.length)),
+        el("div", { class: "kpi" }, "Последняя синхронизация", el("b", { class: s.last_sync && s.last_sync.status === "ok" ? "ok" : "bad" }, s.last_sync ? s.last_sync.status : "—"),
+          el("span", { class: "muted" }, s.last_sync ? fmtTime(s.last_sync.time) : ""))),
+      el("p", { class: "muted" }, "Версия " + (s.version || "dev") + ", запущен " + fmtTime(s.started))));
+    v.append(card("Алерты", table(["Алерт", "С", "Сбоев", "Детали"], s.active_alerts.map((a) => [a.key, fmtTime(a.since), a.failures, a.detail || ""]))));
+    v.append(card("Проверки", table(["Проверка", "Результат", "Время"], s.checks.map((c) => [c.key, status(c.ok, c.ok ? "ok" : c.error), c.took_seconds.toFixed(2) + " с"]))));
+    const out = el("div", {});
+    const dry = el("button", { class: "act" }, "Синхронизация: план");
+    const real = el("button", { class: "act primary" }, "Синхронизировать");
+    dry.onclick = () => run(dry, async () => { out.replaceChildren(opResult(await api("POST", "/sync", { dry_run: true }))); });
+    real.onclick = () => run(real, async () => { if (!confirm("Применить все группы на роутер?")) return; out.replaceChildren(opResult(await api("POST", "/sync", {}))); });
+    v.append(card("Действия", el("div", { class: "row" }, dry, real), out));
+  },
+
+  async groups(v) {
+    const gs = await api("GET", "/groups");
+    v.append(card("Группы", table(["Группа", "Подключение", "Записей", "Версия", "Применена", "Закреплена", "Ручные"],
+      gs.map((g) => [el("a", { onclick: () => groupView(g.name) }, g.name), g.connection, g.entries, g.latest_version || "—",
+        g.applied_version || "—", g.pinned_version || "—", "+" + (g.manual_include || []).length + "/-" + (g.manual_remove || []).length]))));
+  },
+
+  async journal(v) {
+    const form = el("div", { class: "row" });
+    const group = el("input", { placeholder: "группа" }), kind = el("select", {}, ["", "sync", "rollback", "manual", "router-apply", "awg-apply", "awg-remove"].map((k) => el("option", { value: k }, k || "все виды")));
+    const st = el("select", {}, ["", "ok", "partial", "failed", "skipped"].map((k) => el("option", { value: k }, k || "любой результат")));
+    const since = el("input", { placeholder: "за период: 7d", size: 10 });
+    const go = el("button", { class: "act" }, "Показать");
+    const list = el("div", {}), detail = el("div", {});
+    form.append(group, kind, st, since, go);
+    const load = () => run(go, async () => {
+      const q = new URLSearchParams();
+      if (group.value) q.set("group", group.value); if (kind.value) q.set("kind", kind.value);
+      if (st.value) q.set("status", st.value); if (since.value) q.set("since", since.value);
+      const es = await api("GET", "/journal?" + q);
+      list.replaceChildren(table(["#", "Время", "Вид", "Запуск", "Режим", "Результат", "Команд"], es.map((e) => [
+        el("a", { onclick: () => detail.replaceChildren(el("pre", {}, JSON.stringify(e, null, 2))) }, e.id), fmtTime(e.time), e.kind, e.trigger,
+        e.dry_run ? "dry-run" : "real", status(e.status === "ok", e.status), e.applied || e.commands || 0])));
+    });
+    go.onclick = load;
+    v.append(card("Журнал", form, list, detail));
+    load();
+  },
+
+  async tunnels(v) {
+    const ts = await api("GET", "/tunnels");
+    v.append(card("Туннели", table(["Туннель", "Интерфейс", "Включён", "Применён"], ts.map((t) => [t.name + (t.orphan ? " (нет в конфиге)" : ""),
+      (t.interface || "—") + (t.auto_interface ? " (auto)" : ""), t.enabled ? "да" : "нет", fmtTime(t.applied_at)]))));
+    if (!ts.length) return;
+    const stBox = el("div", {});
+    v.append(card("Состояние", stBox));
+    try {
+      const sts = await api("GET", "/tunnels/status");
+      stBox.append(table(["Туннель", "Здоров", "Пир", "Endpoint", "Handshake", "rx / tx"], sts.flatMap((s) => (s.peers && s.peers.length ? s.peers : [{}]).map((p) => [
+        s.tunnel + " (" + (s.interface || "—") + ")", status(s.healthy, s.healthy ? "да" : s.error), p.public_key ? p.public_key.slice(0, 8) + "…" : "—",
+        p.endpoint || "—", p.handshake_age_seconds == null ? "—" : p.handshake_age_seconds < 0 ? "никогда" : Math.round(p.handshake_age_seconds) + " с назад",
+        p.rx_bytes == null ? "—" : p.rx_bytes + " / " + p.tx_bytes]))));
+    } catch (e) { stBox.append(el("p", { class: "bad" }, e.message)); }
+    const out = el("div", {});
+    const plan = el("button", { class: "act" }, "План импорта");
+    const apply = el("button", { class: "act primary" }, "Импортировать на роутер");
+    plan.onclick = () => run(plan, async () => out.replaceChildren(opResult(await api("POST", "/tunnels/apply", { dry_run: true }))));
+    apply.onclick = () => run(apply, async () => { if (!confirm("Применить конфигурацию туннелей на роутер?")) return; out.replaceChildren(opResult(await api("POST", "/tunnels/apply", {}))); });
+    v.append(card("Импорт", el("div", { class: "row" }, plan, apply), out));
+  },
+
+  async router(v) {
+    const s = await api("GET", "/router");
+    v.append(card("Группы на роутере", table(["Группа", "include", "exclude", "Описание"], (s.groups || []).map((g) => [g.name, g.include, g.exclude, g.description || ""]))));
+    v.append(card("Маршруты dns-proxy", table(["Группа", "Куда", "auto", "reject"], (s.routes || []).map((r) => [r.Group, r.Interface || (r.Gateway + (r.Via ? " via " + r.Via : "")), r.Auto ? "да" : "", r.Reject ? "да" : ""]))));
+    v.append(card("Wireguard", table(["Интерфейс", "Адрес", "Up", "ASC", "Пиры"], (s.interfaces || []).map((i) => [i.name + (i.description ? " — " + i.description : ""), i.address || "—", i.up ? "да" : "нет", (i.asc || []).join(" "), (i.peers || []).length]))));
+  },
+};
+
+async function groupView(name) {
+  const v = $("#view");
+  v.replaceChildren(el("p", { class: "muted" }, "Загрузка…"));
+  try {
+    const [g, vs] = await Promise.all([api("GET", "/groups/" + encodeURIComponent(name)), api("GET", "/groups/" + encodeURIComponent(name) + "/versions")]);
+    const out = el("div", {});
+    const entries = el("textarea", { placeholder: "домены через пробел или с новой строки" });
+    const words = () => entries.value.split(/\s+/).filter(Boolean);
+    const btn = (label, fn, primary) => { const b = el("button", { class: "act" + (primary ? " primary" : "") }, label); b.onclick = () => run(b, fn); return b; };
+    const show = (r) => out.replaceChildren(r.entry ? opResult(r) : el("p", { class: "ok" }, "Сохранено"));
+    v.replaceChildren(
+      el("p", {}, el("a", { onclick: () => route("groups") }, "← все группы")),
+      card("Группа " + g.name, el("p", {}, (g.description || "") + " → " + g.connection + "; источники: " + ((g.sources || []).join(", ") || "нет")),
+        el("p", { class: "muted" }, "Версия " + (g.latest_version || "—") + ", применена " + (g.applied_version || "—") + (g.pinned_version ? ", закреплена v" + g.pinned_version : "")),
+        el("div", { class: "row" }, btn("План", async () => show(await api("POST", "/sync", { groups: [name], dry_run: true }))),
+          btn("Синхронизировать", async () => show(await api("POST", "/sync", { groups: [name] })), true),
+          g.pinned_version ? btn("Открепить", async () => { show(await api("POST", "/groups/" + encodeURIComponent(name) + "/unpin", { apply: true })); }) : null),
+        out),
+      card("Ручные записи", el("p", { class: "muted" }, "Добавлены: " + ((g.manual_include || []).join(" ") || "—") + "; убраны: " + ((g.manual_remove || []).join(" ") || "—")),
+        entries, el("div", { class: "row" },
+          btn("Добавить и применить", async () => show(await api("POST", "/groups/" + encodeURIComponent(name) + "/manual", { add: words(), apply: true })), true),
+          btn("Убрать и применить", async () => show(await api("POST", "/groups/" + encodeURIComponent(name) + "/manual", { remove: words(), apply: true }))),
+          btn("Сбросить ручные", async () => { if (confirm("Сбросить все ручные записи?")) show(await api("POST", "/groups/" + encodeURIComponent(name) + "/manual", { clear: true })); }))),
+      card("Версии", table(["Версия", "Создана", "Записей", "Причина", ""], vs.map((x) => [x.number + (x.applied ? " (применена)" : "") + (x.pinned ? " (закреплена)" : ""),
+        fmtTime(x.created_at), x.entries, x.reason || "", x.applied ? "" : btn("Откатить сюда", async () => { if (confirm("Закрепить группу на v" + x.number + " и применить?")) show(await api("POST", "/groups/" + encodeURIComponent(name) + "/rollback", { to: x.number })); })]))),
+      card("Записи v" + ((g.version && g.version.number) || "—"), el("pre", {}, g.version ? g.version.entries.concat((g.version.exclude || []).map((e) => "!" + e)).join("\n") : "нет версий")));
+  } catch (e) { v.replaceChildren(el("p", { class: "bad" }, e.message)); }
+}
+
+async function route(name) {
+  name = name || location.hash.slice(1) || "overview";
+  if (!views[name]) name = "overview";
+  if (location.hash.slice(1) !== name) history.replaceState(null, "", "#" + name);
+  $("#tabs").replaceChildren(...tabs.map(([k, t]) => el("button", { class: k === name ? "on" : "", onclick: () => route(k) }, t)));
+  const v = $("#view");
+  v.replaceChildren(el("p", { class: "muted" }, "Загрузка…"));
+  const box = el("div", {});
+  try { await views[name](box); v.replaceChildren(box); }
+  catch (e) { v.replaceChildren(card("Ошибка", el("p", { class: "bad" }, e.message), el("p", { class: "muted" }, "Если нужен токен — введите его справа сверху."))); }
+}
+window.addEventListener("hashchange", () => route());
+route();
+</script>
+</body>
+</html>

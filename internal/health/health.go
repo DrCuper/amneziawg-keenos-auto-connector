@@ -128,6 +128,9 @@ type Monitor struct {
 	Interval time.Duration
 	Alerts   Updater
 	Logger   *slog.Logger
+	// OnResults, if set, receives every round's results (API status page,
+	// metrics).
+	OnResults func([]Result)
 }
 
 // Run blocks until ctx is cancelled. The first round runs after one interval,
@@ -149,7 +152,11 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-t.C:
 		}
 		var signals []notify.Signal
-		for _, r := range RunAll(ctx, m.Checks) {
+		results := RunAll(ctx, m.Checks)
+		if m.OnResults != nil && ctx.Err() == nil {
+			m.OnResults(results)
+		}
+		for _, r := range results {
 			if ctx.Err() != nil {
 				return
 			}

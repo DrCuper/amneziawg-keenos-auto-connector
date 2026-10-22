@@ -6,7 +6,10 @@ package journal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router"
@@ -199,4 +202,23 @@ func (o *Observer) Observe(_ context.Context, r *syncer.Report) {
 	if _, err := o.J.Append(FromReport(r, o.MaxChanges)); err != nil {
 		o.J.logger().Warn("journal: cannot record operation", "kind", r.Kind, "err", err)
 	}
+}
+
+// ParseSince accepts a duration back from now (90m, 24h, 7d) or a local
+// date/time (RFC 3339, 2006-01-02T15:04, 2006-01-02 15:04, 2006-01-02).
+func ParseSince(s string, now time.Time) (time.Time, error) {
+	if n, ok := strings.CutSuffix(s, "d"); ok {
+		if d, err := strconv.Atoi(n); err == nil && d >= 0 {
+			return now.Add(-time.Duration(d) * 24 * time.Hour), nil
+		}
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return now.Add(-d), nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("%q: want a duration (24h, 7d) or a date (2026-10-20)", s)
 }

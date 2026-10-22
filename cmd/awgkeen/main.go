@@ -1,6 +1,7 @@
 // Command awgkeen manages domain-based routing and AmneziaWG connections on
 // Keenetic routers: `router` (stage 1), `sync`, `serve` and `groups` (stage 2),
-// `journal`, `notify` and `health` (stage 3), `awg` (stage 4).
+// `journal`, `notify` and `health` (stage 3), `awg` (stage 4), REST API and
+// web UI in `serve` (stage 5).
 package main
 
 import (
@@ -19,6 +20,9 @@ import (
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
 )
 
+// version is set at build time: -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -33,6 +37,7 @@ func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "awgkeen",
 		Short:         "AmneziaWG + Keenetic domain routing manager",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

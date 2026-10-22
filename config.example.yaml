@@ -4,6 +4,7 @@
 #   AWGKEEN_ROUTER_KEY_FILE   SSH private key path (ssh)
 #   AWGKEEN_TELEGRAM_BOT_TOKEN, AWGKEEN_TELEGRAM_CHAT_ID   Telegram channel
 #   AWGKEEN_WEBHOOK_URL, AWGKEEN_WEBHOOK_SECRET            first webhook
+#   AWGKEEN_API_TOKEN, AWGKEEN_API_READ_TOKEN              REST API bearer tokens
 # Environment values take precedence over *_file options, which take
 # precedence over values written in this file.
 
@@ -102,6 +103,17 @@ awg:
   #    check:
   #      enabled: true
   #      max_handshake_age: 5m             # older handshake -> awg_down:main
+
+# REST API, /metrics and the web UI of `awgkeen serve`.
+api:
+  listen: ""                    # e.g. 127.0.0.1:8080 or 192.168.1.10:8080; empty = off
+  # token: ""                   # full access (>= 16 chars); required unless listen is loopback
+  # token_file: /run/secrets/awgkeen_api_token
+  # read_token: ""              # GET only (dashboards, Prometheus)
+  # read_token_file: /run/secrets/awgkeen_api_read_token
+  ui: true                      # web UI at /
+  # tls_cert_file: /etc/awgkeen/tls.crt
+  # tls_key_file: /etc/awgkeen/tls.key
 
 log:
   level: info                   # debug | info | warn | error

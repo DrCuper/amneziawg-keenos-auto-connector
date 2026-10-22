@@ -48,6 +48,7 @@ internal/journal/       журнал изменений (JSON Lines), запро
 internal/notify/        каналы Telegram/webhook, алерты с подавлением повторов
 internal/health/        проверки здоровья (роутер, AWG, хуки) и монитор для serve
 internal/awg/           разбор .conf/vpn://, импорт туннелей в Wireguard<N>, оценка handshake
+internal/api/           REST API, метрики, встроенный веб‑интерфейс
 internal/router/        Доменная модель роутера: State, Desired*, Plan, Client
 internal/router/rci/    Транспорт RCI (HTTP, challenge‑response auth)
 internal/router/sshx/   Транспорт SSH (CLI через exec)

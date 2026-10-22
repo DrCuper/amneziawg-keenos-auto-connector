@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -82,9 +85,9 @@ func newServeCmd(cfgPath *string) *cobra.Command {
 	var noStart bool
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Run as a daemon: sync on a cron schedule",
+		Short: "Run as a daemon: sync on a cron schedule, health checks, REST API and web UI",
 		RunE: func(c *cobra.Command, _ []string) error {
-			a, _, s, err := openSyncer(*cfgPath)
+			a, st, s, err := openSyncer(*cfgPath)
 			if err != nil {
 				return err
 			}
@@ -98,18 +101,50 @@ func newServeCmd(cfgPath *string) *cobra.Command {
 			if a.Config.Router.LockFile == "" {
 				a.Logger.Warn("router.lock_file is empty: a manual `awgkeen sync` may run concurrently with the daemon")
 			}
+			// ops serializes the scheduler, the startup tunnel import and
+			// mutating API calls.
+			var ops sync.Mutex
 			runOnStart := a.Config.Sync.RunOnStart == nil || *a.Config.Sync.RunOnStart
-			sch := &syncer.Scheduler{Syncer: s, Schedule: schedule, RunOnStart: runOnStart && !noStart, Logger: a.Logger}
+			sch := &syncer.Scheduler{Syncer: s, Schedule: schedule, RunOnStart: runOnStart && !noStart, Logger: a.Logger,
+				Run: func(ctx context.Context, trigger string) error {
+					ops.Lock()
+					defer ops.Unlock()
+					_, err := s.Run(ctx, syncer.Options{Trigger: trigger})
+					return err
+				}}
 
 			ctx, cancel := context.WithCancel(c.Context())
 			var wg sync.WaitGroup
 			defer wg.Wait()
 			defer cancel() // runs before wg.Wait
-			mon := &health.Monitor{Checks: a.HealthChecks(), Interval: a.Config.Health.Interval, Alerts: a.Alerter(), Logger: a.Logger}
+			var last lastResults
+			mon := &health.Monitor{Checks: a.HealthChecks(), Interval: a.Config.Health.Interval, Alerts: a.Alerter(), Logger: a.Logger, OnResults: last.set}
 			wg.Add(2)
 			go func() { defer wg.Done(); mon.Run(ctx) }()
 			go func() { defer wg.Done(); prunePeriodically(ctx, a) }()
+			if a.Config.API.Listen != "" {
+				srv := a.NewAPI(st, s, &ops, last.get, version)
+				errc := make(chan error, 1)
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					err := serveHTTP(ctx, a, srv.Handler())
+					if err != nil {
+						a.Logger.Error("api: server stopped", "err", err)
+					}
+					errc <- err
+				}()
+				select {
+				case err := <-errc:
+					if err != nil {
+						return err
+					}
+				case <-time.After(200 * time.Millisecond): // listening
+				}
+			}
+			ops.Lock()
 			applyTunnelsOnStart(ctx, a)
+			ops.Unlock()
 			return sch.Start(ctx)
 		},
 	}
@@ -395,4 +430,52 @@ func orDash(n int) string {
 		return "-"
 	}
 	return fmt.Sprint(n)
+}
+
+// lastResults keeps the latest health round for the API.
+type lastResults struct {
+	mu  sync.Mutex
+	res []health.Result
+}
+
+func (l *lastResults) set(r []health.Result) { l.mu.Lock(); l.res = r; l.mu.Unlock() }
+
+func (l *lastResults) get() []health.Result {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]health.Result(nil), l.res...)
+}
+
+// serveHTTP runs the API until ctx is done, then shuts it down gracefully.
+func serveHTTP(ctx context.Context, a *app.App, h http.Handler) error {
+	cfg := a.Config.API
+	srv := &http.Server{
+		Addr: cfg.Listen, Handler: h,
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 10 * time.Minute, // a sync with large lists can take a while
+		IdleTimeout:  2 * time.Minute,
+	}
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	if cfg.Token == "" && cfg.ReadToken == "" {
+		a.Logger.Warn("api: no token configured, access is not authenticated (loopback only)")
+	}
+	a.Logger.Info("api: listening", "addr", ln.Addr().String(), "tls", cfg.TLSCert != "", "ui", cfg.UIEnabled())
+	go func() {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
+	if cfg.TLSCert != "" {
+		err = srv.ServeTLS(ln, cfg.TLSCert, cfg.TLSKey)
+	} else {
+		err = srv.Serve(ln)
+	}
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }

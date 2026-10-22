@@ -7,8 +7,9 @@
 сервиса и план этапов — в [`openspec/project.md`](openspec/project.md),
 спецификации — в `openspec/specs/`, предложения — в `openspec/changes/`.
 
-**Статус:** этапы 1–4 (клиент роутера, группы и синхронизация, журнал и
-уведомления, импорт AmneziaWG) реализованы и заархивированы в `openspec/specs/`.
+**Статус:** этап 5 — REST API и веб‑интерфейс (`openspec/changes/add-web-api`);
+этапы 1–4 (клиент роутера, группы и синхронизация, журнал и уведомления,
+импорт AmneziaWG) заархивированы в `openspec/specs/`.
 
 ## Что умеет сейчас
 
@@ -51,6 +52,10 @@
   S3/S4/I1–I5). Идемпотентно и через дифф, как группы; ключи нигде не
   выводятся; чужие интерфейсы не трогаются. Маршруты групп могут ссылаться
   на туннель по имени (`tunnel: main`).
+* **REST API и веб‑интерфейс** в `awgkeen serve` (`api.listen`): группы,
+  версии, ручные правки, откат, синхронизация, журнал, алерты, проверки,
+  туннели, состояние роутера, `/metrics` для Prometheus. Bearer‑токены
+  (полный и только чтение), без токена — только localhost.
 
 ## Установка
 
@@ -104,7 +109,7 @@ groups:
 awgkeen sync                              # собрать группы из источников и применить дифф
 awgkeen sync --dry-run                    # показать сводку и план, ничего не менять
 awgkeen sync --group awg-main --force     # одна группа, без защиты от сокращения
-awgkeen serve                             # демон: синхронизация по sync.schedule
+awgkeen serve                             # демон: cron, проверки, импорт туннелей, REST API и веб-интерфейс
 
 awgkeen groups list                       # версии, применённые версии, закрепления
 awgkeen groups show awg-main [--version 3]
@@ -255,6 +260,46 @@ J1–J3/Itime игнорируются с предупреждением. `awgke
 туннели при старте (`awg.apply_on_start`) и проверяет их каждые
 `health.interval`.
 
+## REST API и веб‑интерфейс
+
+```yaml
+api:
+  listen: 192.168.1.10:8080       # пусто = выключено; без токена — только 127.0.0.1/::1
+  # token / read_token — или AWGKEEN_API_TOKEN / AWGKEEN_API_READ_TOKEN, или *_file
+```
+
+Веб‑интерфейс — `http://192.168.1.10:8080/` (токен вводится справа сверху и
+хранится в браузере). Примеры API:
+
+```sh
+H="Authorization: Bearer $AWGKEEN_API_TOKEN"
+curl -H "$H" http://host:8080/api/v1/status
+curl -H "$H" http://host:8080/api/v1/groups
+curl -H "$H" -X POST http://host:8080/api/v1/sync -d '{"dry_run":true}'
+curl -H "$H" -X POST http://host:8080/api/v1/groups/awg-main/manual -d '{"add":["site.example"],"apply":true}'
+curl -H "$H" -X POST http://host:8080/api/v1/groups/awg-main/rollback -d '{"to":3}'
+curl -H "$H" 'http://host:8080/api/v1/journal?group=awg-main&since=7d'
+curl -H "$H" http://host:8080/api/v1/tunnels/status
+curl -H "$H" http://host:8080/metrics
+```
+
+| Метод и путь | Что делает |
+|---|---|
+| `GET /api/v1/health` | живость, без токена |
+| `GET /api/v1/status` | сводка: группы, туннели, алерты, последняя синхронизация, проверки |
+| `GET /api/v1/groups`, `/groups/{name}[?version=N]`, `/groups/{name}/versions` | группы, записи версии, история |
+| `POST /api/v1/groups/{name}/manual` | `{"add":[],"remove":[],"clear":false,"apply":false}` |
+| `POST /api/v1/groups/{name}/rollback`, `/unpin` | `{"to":N,"dry_run":false}`, `{"apply":false}` |
+| `POST /api/v1/sync` | `{"groups":[],"dry_run":false,"force":false}` |
+| `GET /api/v1/journal[?group&kind&status&since&dry_run&limit]`, `/journal/{id}` | журнал |
+| `GET /api/v1/alerts`, `/checks`, `/router` | алерты, проверки, состояние роутера (без ключей) |
+| `GET /api/v1/tunnels`, `/tunnels/status`; `POST /api/v1/tunnels/apply` | AWG‑туннели |
+| `GET /metrics` | Prometheus |
+
+Изменяющие запросы, cron и импорт при старте выполняются по одному: если
+что‑то уже идёт, API отвечает `409`. Ответ операций — запись журнала
+(`entry`), сводка (`summary`) и план (`plan`, ключи — `<secret>`).
+
 ## Как это работает
 
 Оба транспорта исполняют **одни и те же CLI‑строки** KeeneticOS
@@ -281,6 +326,7 @@ internal/journal/     журнал изменений (JSON Lines), запрос
 internal/notify/      Telegram/webhook, алерты с подавлением повторов и восстановлением
 internal/health/      проверки здоровья: роутер, AWG-туннели, хуки-команды; монитор для serve
 internal/awg/         разбор .conf / vpn://, импорт туннелей, оценка handshake
+internal/api/         REST API, метрики, встроенный веб-интерфейс (web/index.html)
 internal/router/      модель, план (дифф), Client: lock → read → backup → plan → apply → verify → save
 internal/router/cli/  парсер running-config и генерация команд
 internal/router/rci/  транспорт RCI
@@ -301,4 +347,4 @@ openspec validate --strict
 
 ## Дорожная карта
 
-См. таблицу этапов в [`openspec/project.md`](openspec/project.md): веб‑интерфейс и REST API → управление сервером и пирами.
+См. таблицу этапов в [`openspec/project.md`](openspec/project.md): управление сервером AmneziaWG и пирами.

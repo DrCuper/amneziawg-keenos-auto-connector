@@ -197,3 +197,30 @@ awg:
 		t.Errorf("inline conf not redacted: %q", r.AWG.Tunnels[1].Conf)
 	}
 }
+
+func TestAPIValidation(t *testing.T) {
+	for yml, want := range map[string]string{
+		"api: {listen: '0.0.0.0:8080'}":                         "api.token is required",
+		"api: {listen: 'nonsense'}":                             "must be host:port",
+		"api: {listen: '127.0.0.1:8080', token: short}":         "at least 16",
+		"api: {listen: '127.0.0.1:8080', tls_cert_file: c.pem}": "go together",
+		"api: {listen: '127.0.0.1:8080'}":                       "",
+	} {
+		cfg := Default()
+		err := Parse([]byte("router: {url: http://r, password: p}\n"+yml), &cfg)
+		switch {
+		case want == "" && err != nil:
+			t.Errorf("%s: %v", yml, err)
+		case want != "" && (err == nil || !strings.Contains(err.Error(), want)):
+			t.Errorf("%s: want %q, got %v", yml, want, err)
+		}
+	}
+	t.Setenv(EnvAPIToken, "env-token-0123456789")
+	cfg := Default()
+	if err := Parse([]byte("router: {url: http://r, password: p}\napi: {listen: ':8080'}"), &cfg); err != nil || cfg.API.Token != "env-token-0123456789" {
+		t.Errorf("env token: %v %q", err, cfg.API.Token)
+	}
+	if cfg.Redacted().API.Token != "***" {
+		t.Error("token not redacted")
+	}
+}

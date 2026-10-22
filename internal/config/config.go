@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -27,6 +28,10 @@ const (
 	// created when notify.webhooks is empty and the URL is set).
 	EnvWebhookURL    = "AWGKEEN_WEBHOOK_URL"
 	EnvWebhookSecret = "AWGKEEN_WEBHOOK_SECRET"
+
+	// EnvAPIToken / EnvAPIReadToken are the HTTP API bearer tokens.
+	EnvAPIToken     = "AWGKEEN_API_TOKEN"
+	EnvAPIReadToken = "AWGKEEN_API_READ_TOKEN"
 )
 
 // Config is the root of the YAML file.
@@ -41,7 +46,26 @@ type Config struct {
 	Notify   Notify  `yaml:"notify"`
 	Health   Health  `yaml:"health"`
 	AWG      AWG     `yaml:"awg"`
+	API      API     `yaml:"api"`
 }
+
+// API configures the REST API and web UI of `serve` (stage 5).
+type API struct {
+	// Listen is host:port; empty disables the API.
+	Listen string `yaml:"listen"`
+	// Token grants full access, ReadToken read-only access (GET).
+	Token         string `yaml:"token"`
+	TokenFile     string `yaml:"token_file"`
+	ReadToken     string `yaml:"read_token"`
+	ReadTokenFile string `yaml:"read_token_file"`
+	UI            *bool  `yaml:"ui"` // serve the web UI at /, default true
+	// TLSCert/TLSKey enable HTTPS.
+	TLSCert string `yaml:"tls_cert_file"`
+	TLSKey  string `yaml:"tls_key_file"`
+}
+
+// UIEnabled reports whether the web UI is served.
+func (a API) UIEnabled() bool { return a.UI == nil || *a.UI }
 
 // AWG lists AmneziaWG tunnels to import onto the router (stage 4).
 type AWG struct {
@@ -253,7 +277,11 @@ func (c *Config) ResolveFiles(read func(string) ([]byte, error)) error {
 		return nil
 	}
 	n := &c.Notify
-	errs := []error{load("notify.telegram.bot_token_file", n.Telegram.BotTokenFile, &n.Telegram.BotToken)}
+	errs := []error{
+		load("notify.telegram.bot_token_file", n.Telegram.BotTokenFile, &n.Telegram.BotToken),
+		load("api.token_file", c.API.TokenFile, &c.API.Token),
+		load("api.read_token_file", c.API.ReadTokenFile, &c.API.ReadToken),
+	}
 	for i := range n.Webhooks {
 		w := &n.Webhooks[i]
 		errs = append(errs,
@@ -272,6 +300,12 @@ func (c *Config) ApplyEnv(getenv func(string) string) {
 	}
 	if v := getenv(EnvRouterKeyFile); v != "" {
 		c.Router.KeyFile = v
+	}
+	if v := getenv(EnvAPIToken); v != "" {
+		c.API.Token = v
+	}
+	if v := getenv(EnvAPIReadToken); v != "" {
+		c.API.ReadToken = v
 	}
 	n := &c.Notify
 	if v := getenv(EnvTelegramBotToken); v != "" {
@@ -345,6 +379,7 @@ func (c *Config) Validate() error {
 	if err := awg.ValidateTunnels(c.AWG.Tunnels); err != nil {
 		errs = append(errs, err)
 	}
+	errs = append(errs, c.API.validate()...)
 	for _, t := range c.AWG.Tunnels {
 		for _, ch := range c.Health.Checks {
 			if ch.Name == t.Name && (ch.Alert == "" || ch.Alert == "awg_down") {
@@ -415,6 +450,38 @@ var (
 	alertName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
+func (a *API) validate() []error {
+	if a.Listen == "" {
+		return nil
+	}
+	var errs []error
+	host, port, err := net.SplitHostPort(a.Listen)
+	if err != nil || port == "" {
+		return []error{fmt.Errorf("api.listen %q must be host:port", a.Listen)}
+	}
+	if a.Token == "" && !isLoopback(host) {
+		errs = append(errs, fmt.Errorf("api.token is required when api.listen is not a loopback address (or set %s)", EnvAPIToken))
+	}
+	if a.Token != "" && len(a.Token) < 16 {
+		errs = append(errs, errors.New("api.token must be at least 16 characters"))
+	}
+	if a.ReadToken != "" && (len(a.ReadToken) < 16 || a.ReadToken == a.Token) {
+		errs = append(errs, errors.New("api.read_token must be at least 16 characters and differ from api.token"))
+	}
+	if (a.TLSCert == "") != (a.TLSKey == "") {
+		errs = append(errs, errors.New("api.tls_cert_file and api.tls_key_file go together"))
+	}
+	return errs
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Redacted returns a copy safe for logging.
 func (c Config) Redacted() Config {
 	if c.Router.Password != "" {
@@ -422,6 +489,12 @@ func (c Config) Redacted() Config {
 	}
 	if c.Notify.Telegram.BotToken != "" {
 		c.Notify.Telegram.BotToken = "***"
+	}
+	if c.API.Token != "" {
+		c.API.Token = "***"
+	}
+	if c.API.ReadToken != "" {
+		c.API.ReadToken = "***"
 	}
 	if len(c.Notify.Webhooks) > 0 {
 		ws := append([]Webhook(nil), c.Notify.Webhooks...)

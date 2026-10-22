@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/api"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/config"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/domains"
@@ -226,6 +228,34 @@ func (a *App) HealthChecks() []health.Check {
 		out = append(out, health.CommandCheck{Name: c.Name, Alert: c.Alert, Command: c.Command, Timeout: c.Timeout})
 	}
 	return out
+}
+
+// NewAPI builds the HTTP API over the same store, syncer and lock the
+// daemon uses. checks returns the latest health results.
+func (a *App) NewAPI(st store.Store, s *syncer.Syncer, ops *sync.Mutex, checks func() []health.Result, version string) *api.Server {
+	apiSyncer := *s
+	apiSyncer.DefaultTrigger = syncer.TriggerAPI
+	srv := &api.Server{
+		Syncer:     &apiSyncer,
+		Store:      st,
+		SpecPath:   a.DomainsFile(),
+		Journal:    a.Journal(),
+		Alerter:    a.Alerter(),
+		Router:     a.Client,
+		Checks:     checks,
+		Record:     a.Record,
+		MaxChanges: a.Config.Journal.MaxChanges,
+		Token:      a.Config.API.Token,
+		ReadToken:  a.Config.API.ReadToken,
+		UI:         a.Config.API.UIEnabled(),
+		Ops:        ops,
+		Version:    version,
+		Logger:     a.Logger,
+	}
+	if len(a.Config.AWG.Tunnels) > 0 {
+		srv.Tunnels = a.Tunnels()
+	}
+	return srv
 }
 
 // DomainsFile returns the absolute path of sync.domains_file.

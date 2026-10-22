@@ -17,6 +17,7 @@ const (
 	TriggerCLI      = "cli"
 	TriggerSchedule = "schedule"
 	TriggerStartup  = "startup"
+	TriggerAPI      = "api"
 )
 
 // Manual edit operations.
@@ -63,6 +64,9 @@ type ManualEdit struct {
 }
 
 func (s *Syncer) report(ctx context.Context, r *Report) {
+	if r.Trigger == "" {
+		r.Trigger = s.DefaultTrigger
+	}
 	if r.Trigger == "" {
 		r.Trigger = TriggerCLI
 	}

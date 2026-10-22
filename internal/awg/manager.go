@@ -58,11 +58,11 @@ type ApplyOptions struct {
 
 // Item is the per-tunnel part of a result.
 type Item struct {
-	Tunnel    string
-	Interface string
+	Tunnel    string `json:"tunnel"`
+	Interface string `json:"interface"`
 	// Created is true when the interface does not exist on the router yet.
-	Created  bool
-	Warnings []string
+	Created  bool     `json:"created"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Result reports what Apply or Remove did.

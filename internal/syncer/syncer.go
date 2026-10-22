@@ -44,8 +44,12 @@ type Syncer struct {
 	// ResolveTunnel maps an AWG tunnel name used in a connection route
 	// (`tunnel: main`) to its Wireguard interface. nil = tunnels unsupported.
 	ResolveTunnel func(name string) (string, error)
-	Logger        *slog.Logger
-	Now           func() time.Time
+	// DefaultTrigger is reported when an operation has no explicit trigger
+	// (rollback, manual edits); empty = TriggerCLI. The HTTP API uses a copy
+	// of the syncer with TriggerAPI.
+	DefaultTrigger string
+	Logger         *slog.Logger
+	Now            func() time.Time
 }
 
 // Options tune one run.
