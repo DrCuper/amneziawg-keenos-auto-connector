@@ -601,10 +601,31 @@ func (s *Server) tunnelApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, out)
 }
 
+// Kinds of KeyImport.
+const (
+	KeyTunnel = "tunnel" // a client key: imported as a tunnel
+	KeyServer = "server" // an Amnezia admin key: the server is registered
+)
+
+// KeyImport is the answer of POST /tunnels/import.
+type KeyImport struct {
+	OK    bool   `json:"ok"`
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Error string `json:"error,omitempty"`
+	// Tunnel: whether it was applied to the router, and how.
+	Applied bool       `json:"applied,omitempty"`
+	Items   []awg.Item `json:"tunnels,omitempty"`
+	Plan    string     `json:"plan,omitempty"`
+	// Server: whether its AWG container was read, and the client endpoint.
+	Adopted  bool   `json:"adopted,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
 type tunnelImportRequest struct {
 	Name    string `json:"name"`
 	Key     string `json:"key"`   // .conf text or vpn:// key
-	Apply   *bool  `json:"apply"` // default true
+	Apply   bool   `json:"apply"` // also import onto the router (client keys)
 	Replace bool   `json:"replace"`
 }
 
@@ -619,8 +640,17 @@ func (s *Server) tunnelImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	res, err := s.ImportKey(r.Context(), syncer.TriggerAPI, req.Name, []byte(req.Key), req.Apply == nil || *req.Apply, req.Replace)
-	s.tunnelOpResult(w, res, err)
+	res, err := s.ImportKey(r.Context(), syncer.TriggerAPI, req.Name, []byte(req.Key), req.Apply, req.Replace)
+	if res == nil {
+		res = &KeyImport{Name: req.Name}
+	}
+	res.OK = err == nil
+	code := http.StatusOK
+	if err != nil {
+		res.Error = err.Error()
+		code = http.StatusUnprocessableEntity
+	}
+	writeJSON(w, code, res)
 }
 
 // tunnelForget removes an imported tunnel from the router and its key.

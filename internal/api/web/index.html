@@ -177,18 +177,22 @@ const views = {
     v.append(card("Туннели", table(["Туннель", "Интерфейс", "Включён", "Применён", ""], ts.map((t) => [t.name + (t.orphan ? " (нет в конфиге)" : t.imported ? " (импортирован)" : ""),
       (t.interface || "—") + (t.auto_interface ? " (auto)" : ""), t.enabled ? "да" : "нет", fmtTime(t.applied_at), t.imported ? del(t) : ""]))));
     const name = el("input", { placeholder: "имя, например nl или friend" });
-    const key = el("textarea", { placeholder: "ключ vpn://… или содержимое .conf от любого сервера AmneziaWG" });
-    const replace = el("input", { type: "checkbox" });
-    const imp = el("button", { class: "act primary" }, "Импортировать ключ");
+    const key = el("textarea", { placeholder: "vpn://… или содержимое .conf: ключ клиента или ключ администратора (полный доступ) из AmneziaVPN" });
+    const replace = el("input", { type: "checkbox" }), applyNow = el("input", { type: "checkbox" });
+    const imp = el("button", { class: "act primary" }, "Добавить");
     imp.onclick = () => run(imp, async () => {
       const n = name.value.trim(), k = key.value.trim(); if (!n || !k) return;
-      const res = await api("POST", "/tunnels/import", { name: n, key: k, replace: replace.checked });
+      const res = await api("POST", "/tunnels/import", { name: n, key: k, replace: replace.checked, apply: applyNow.checked });
       key.value = "";
-      out.replaceChildren(opResult(res));
-      if (res.ok) toast("Туннель " + n + " импортирован");
+      const box = el("div", {}, el("div", {}, status(res.ok, res.ok ? "готово" : res.error)));
+      if (res.kind === "server") box.append(el("p", {}, "Ключ администратора: сервер " + n + " добавлен" + (res.adopted ? ", клиенты будут подключаться к " + res.endpoint : "") + ". Выдавать ключи — во вкладке «Сервер».", " "));
+      else if (res.kind === "tunnel") box.append(el("p", {}, res.applied ? "Туннель " + n + " применён на роутере." : "Туннель " + n + " добавлен; роутер не менялся. Применить — кнопкой «Импортировать на роутер» ниже."));
+      if (res.plan) box.append(el("pre", {}, res.plan));
+      out.replaceChildren(box);
+      if (res.ok) setTimeout(() => route(res.kind === "server" ? "servers" : "tunnels"), 1500);
     });
-    v.append(card("Добавить ключ", el("p", { class: "muted" }, "Ключ от уже работающего сервера (приложение AmneziaVPN, сервер друга или провайдера). Каждый ключ — отдельный туннель и интерфейс Wireguard на роутере; в domains.yaml направляйте группы через tunnel: <имя>. Ключ хранится в state_dir/tunnels с правами 0600 и обратно не показывается."),
-      name, key, el("label", {}, replace, " заменить ключ существующего импортированного туннеля"), el("div", { class: "row" }, imp), out));
+    v.append(card("Добавить ключ", el("p", { class: "muted" }, "Ключ клиента от уже работающего сервера (AmneziaVPN, сервер друга или провайдера) становится туннелем; ключ администратора («полный доступ» в AmneziaVPN) добавляет сервер, на котором можно выдавать и отзывать ключи без приложения. Несколько ключей — несколько серверов; в domains.yaml группы направляются через tunnel: <имя>. Ключи хранятся в state_dir с правами 0600."),
+      name, key, el("label", {}, applyNow, " сразу применить туннель на роутере"), el("label", {}, replace, " заменить ключ существующего"), el("div", { class: "row" }, imp), out));
     if (!ts.length) return;
     const stBox = el("div", {});
     v.append(card("Состояние", stBox));
@@ -209,7 +213,7 @@ const views = {
 
   async servers(v) {
     const ss = await api("GET", "/servers");
-    if (!ss.length) { v.append(card("Сервер", el("p", { class: "muted" }, "Серверы не настроены: добавьте секцию servers: в config.yaml и выполните awgkeen server init / install / deploy."))); return; }
+    if (!ss.length) { v.append(card("Сервер", el("p", { class: "muted" }, "Серверов нет: добавьте ключ администратора Amnezia во вкладке «Туннели» (или awgkeen server import), либо опишите свой VPS в servers: config.yaml и выполните awgkeen server init / install / deploy."))); return; }
     for (const srv of ss) v.append(await serverCard(srv));
   },
 
@@ -224,9 +228,14 @@ const views = {
 async function serverCard(srv) {
   const base = "/servers/" + encodeURIComponent(srv.name);
   const c = card("Сервер " + srv.name);
-  c.append(el("p", {}, (srv.local ? "эта машина" : srv.host) + " → клиенты подключаются к " + srv.endpoint + ", сеть " + srv.subnet + ", интерфейс " + srv.interface));
+  c.append(el("p", {}, (srv.local ? "эта машина" : srv.host) + (srv.amnezia ? " (установлен приложением AmneziaVPN)" : "") + " → клиенты подключаются к " + srv.endpoint + ", сеть " + srv.subnet + ", интерфейс " + srv.interface));
+  if (srv.imported) {
+    const forget = el("button", { class: "act" }, "Забыть сервер");
+    forget.onclick = () => run(forget, async () => { if (!confirm("Забыть сервер " + srv.name + " и его пароль? Выданные ключи продолжат работать.")) return; await api("DELETE", "/servers/" + encodeURIComponent(srv.name)); route("servers"); });
+    c.append(el("div", { class: "row" }, forget));
+  }
   if (srv.error) { c.append(el("p", { class: "bad" }, srv.error)); return c; }
-  if (!srv.initialized) { c.append(el("p", { class: "muted" }, "Не инициализирован: выполните awgkeen server init -s " + srv.name + ", затем server install и server deploy.")); return c; }
+  if (!srv.initialized) { c.append(el("p", { class: "muted" }, srv.amnezia ? "Сервер ещё не прочитан: выполните awgkeen server init -s " + srv.name + " --force, когда он доступен." : "Не инициализирован: выполните awgkeen server init -s " + srv.name + ", затем server install и server deploy.")); return c; }
   c.append(el("p", { class: "muted" }, "Публичный ключ " + srv.public_key + "; развёрнут " + fmtTime(srv.deployed_at)));
   const stBox = el("div", {}, el("p", { class: "muted" }, "Опрос сервера…"));
   const out = el("div", {}), cfgBox = el("div", {});

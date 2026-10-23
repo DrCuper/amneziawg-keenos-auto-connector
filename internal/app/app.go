@@ -47,6 +47,7 @@ type App struct {
 	alerter *notify.Alerter
 	tunnels *awg.Manager
 	servers map[string]*server.Manager
+	smu     sync.Mutex
 	// NewRunner overrides how server runners are built (tests).
 	NewRunner func(server.Config) (remote.Runner, error)
 }
@@ -104,6 +105,8 @@ func (a *App) options(save bool) router.Options {
 
 // Close releases the transport and server connections.
 func (a *App) Close() error {
+	a.smu.Lock()
+	defer a.smu.Unlock()
 	for _, m := range a.servers {
 		_ = m.Runner.Close()
 	}
@@ -234,28 +237,51 @@ func (a *App) Keys() awg.KeyStore {
 	return awg.KeyStore{Dir: filepath.Join(a.Config.StateDir, "tunnels")}
 }
 
-// ServerNames lists the configured servers in config order.
+// ServerNames lists the configured servers in config order, then the ones
+// imported from Amnezia admin keys.
 func (a *App) ServerNames() []string {
 	out := make([]string, 0, len(a.Config.Servers))
+	seen := map[string]bool{}
 	for _, s := range a.Config.Servers {
 		out = append(out, s.Name)
+		seen[s.Name] = true
+	}
+	for _, s := range a.importedServers() {
+		if !seen[s.Name] {
+			out = append(out, s.Name)
+		}
 	}
 	return out
 }
 
-// Server returns the manager of a configured server, built once. Its state
-// is <state_dir>/servers/<name>.json; relative key and known_hosts paths
+// ServerConfig finds a server in the config file or among imported ones.
+func (a *App) ServerConfig(name string) (server.Config, bool) {
+	if c, ok := a.Config.Server(name); ok {
+		c.KeyFile = a.resolvePath(c.KeyFile)
+		c.KnownHostsFile = a.resolvePath(c.KnownHostsFile)
+		return c, true
+	}
+	for _, c := range a.importedServers() {
+		if c.Name == name {
+			return c.WithDefaults(), true
+		}
+	}
+	return server.Config{}, false
+}
+
+// Server returns the manager of a server, built once. Its state is
+// <state_dir>/servers/<name>.json; relative key and known_hosts paths
 // resolve against the config file's directory.
 func (a *App) Server(name string) (*server.Manager, error) {
+	a.smu.Lock()
+	defer a.smu.Unlock()
 	if m, ok := a.servers[name]; ok {
 		return m, nil
 	}
-	cfg, ok := a.Config.Server(name)
+	cfg, ok := a.ServerConfig(name)
 	if !ok {
-		return nil, fmt.Errorf("unknown server %q (configured: %s)", name, strings.Join(a.ServerNames(), ", "))
+		return nil, fmt.Errorf("unknown server %q (known: %s)", name, strings.Join(a.ServerNames(), ", "))
 	}
-	cfg.KeyFile = a.resolvePath(cfg.KeyFile)
-	cfg.KnownHostsFile = a.resolvePath(cfg.KnownHostsFile)
 	newRunner := a.NewRunner
 	if newRunner == nil {
 		newRunner = NewRunner
@@ -266,7 +292,7 @@ func (a *App) Server(name string) (*server.Manager, error) {
 	}
 	m := &server.Manager{
 		Config: cfg,
-		Store:  server.NewStore(filepath.Join(a.Config.StateDir, "servers"), name),
+		Store:  server.NewStore(a.serversDir(), name),
 		Runner: r,
 		Logger: a.Logger,
 	}
@@ -277,18 +303,29 @@ func (a *App) Server(name string) (*server.Manager, error) {
 	return m, nil
 }
 
-// DefaultServer resolves an empty name to the only configured server.
+// dropServer forgets a built manager (after its registration changed).
+func (a *App) dropServer(name string) {
+	a.smu.Lock()
+	defer a.smu.Unlock()
+	if m, ok := a.servers[name]; ok {
+		_ = m.Runner.Close()
+		delete(a.servers, name)
+	}
+}
+
+// DefaultServer resolves an empty name to the only known server.
 func (a *App) DefaultServer(name string) (string, error) {
 	if name != "" {
 		return name, nil
 	}
-	switch len(a.Config.Servers) {
+	names := a.ServerNames()
+	switch len(names) {
 	case 0:
-		return "", errors.New("no servers configured (add a `servers:` entry to the config)")
+		return "", errors.New("no servers (add a `servers:` entry to the config or import an Amnezia admin key with `awgkeen awg import`)")
 	case 1:
-		return a.Config.Servers[0].Name, nil
+		return names[0], nil
 	default:
-		return "", fmt.Errorf("several servers configured, pick one with --server (%s)", strings.Join(a.ServerNames(), ", "))
+		return "", fmt.Errorf("several servers, pick one with --server (%s)", strings.Join(names, ", "))
 	}
 }
 
@@ -299,7 +336,7 @@ func NewRunner(c server.Config) (remote.Runner, error) {
 	}
 	return remote.NewSSH(remote.SSHConfig{
 		Host: c.Host, User: c.User, Password: c.Password, KeyFile: c.KeyFile,
-		KnownHostsFile: c.KnownHostsFile, InsecureHostKey: c.InsecureHostKey, Sudo: c.Sudo,
+		KnownHostsFile: c.KnownHostsFile, InsecureHostKey: c.InsecureHostKey, TrustOnFirstUse: c.TrustOnFirstUse, Sudo: c.Sudo,
 	})
 }
 
@@ -328,7 +365,8 @@ func (a *App) HealthChecks() []health.Check {
 			out = append(out, health.AWGCheck{Tunnel: t, Tunnels: a.Tunnels()})
 		}
 	}
-	for _, sc := range a.Config.Servers {
+	for _, name := range a.ServerNames() {
+		sc, _ := a.ServerConfig(name)
 		if !sc.CheckEnabled() {
 			continue
 		}
@@ -369,10 +407,8 @@ func (a *App) NewAPI(st store.Store, s *syncer.Syncer, ops *sync.Mutex, checks f
 		Logger:     a.Logger,
 	}
 	srv.Tunnels = a.Tunnels()
-	srv.ImportKey, srv.ForgetKey = a.ImportTunnel, a.ForgetTunnel
-	if len(a.Config.Servers) > 0 {
-		srv.Servers = a
-	}
+	srv.ImportKey, srv.ForgetKey = a.ImportKey, a.ForgetTunnel
+	srv.Servers = a
 	return srv
 }
 

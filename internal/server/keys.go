@@ -49,6 +49,9 @@ type Params struct {
 	H1, H2, H3, H4 string // a number, or a low-high range (AWG 2.0)
 	// AWG 2.0 only.
 	S3, S4 int `json:",omitempty"`
+	// I1..I5 are AWG 2.0 signature packets, kept as found on an adopted
+	// Amnezia server (never generated).
+	I [5]string `json:",omitzero"`
 }
 
 // Lines returns the `Key = value` lines for an awg-quick [Interface].
@@ -60,7 +63,13 @@ func (p Params) Lines() []string {
 	if p.S3 != 0 || p.S4 != 0 {
 		out = append(out, "S3 = "+strconv.Itoa(p.S3), "S4 = "+strconv.Itoa(p.S4))
 	}
-	return append(out, "H1 = "+p.H1, "H2 = "+p.H2, "H3 = "+p.H3, "H4 = "+p.H4)
+	out = append(out, "H1 = "+p.H1, "H2 = "+p.H2, "H3 = "+p.H3, "H4 = "+p.H4)
+	for i, v := range p.I {
+		if v != "" {
+			out = append(out, "I"+strconv.Itoa(i+1)+" = "+v)
+		}
+	}
+	return out
 }
 
 func randInt(lo, hi int) (int, error) {

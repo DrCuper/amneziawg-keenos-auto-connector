@@ -60,6 +60,12 @@ func (s testServers) PeerOp(ctx context.Context, _, _, op, peer string, deploy b
 	return p, plan, err
 }
 
+func (s testServers) Imported(string) bool { return false }
+
+func (s testServers) ForgetServer(name string) error {
+	return fmt.Errorf("server %q was not imported", name)
+}
+
 func (s testServers) DeployServer(ctx context.Context, _, _ string, dryRun bool) (*server.DeployPlan, error) {
 	return s.m.Deploy(ctx, dryRun)
 }
@@ -151,9 +157,9 @@ func TestServerEndpoints(t *testing.T) {
 func TestTunnelImportEndpoints(t *testing.T) {
 	e := newEnv(t)
 	var got []string
-	e.srv.ImportKey = func(_ context.Context, trigger, name string, key []byte, apply, replace bool) (*awg.Result, error) {
+	e.srv.ImportKey = func(_ context.Context, trigger, name string, key []byte, apply, replace bool) (*KeyImport, error) {
 		got = append(got, fmt.Sprintf("%s %s %v %v %v", trigger, name, apply, replace, strings.HasPrefix(string(key), "vpn://")))
-		return &awg.Result{Items: []awg.Item{{Tunnel: name, Interface: "Wireguard1"}}}, nil
+		return &KeyImport{Kind: KeyTunnel, Name: name, Items: []awg.Item{{Tunnel: name, Interface: "Wireguard1"}}}, nil
 	}
 	e.srv.ForgetKey = func(_ context.Context, _, name string) (*awg.Result, error) {
 		return nil, fmt.Errorf("awg tunnel %q is not an imported key", name)
@@ -162,10 +168,10 @@ func TestTunnelImportEndpoints(t *testing.T) {
 		t.Errorf("read token %d", code)
 	}
 	code, body := e.do(t, "POST", "/api/v1/tunnels/import", adminToken, map[string]any{"name": "nl", "key": "vpn://x"})
-	if code != 200 || !strings.Contains(string(body), "Wireguard1") || len(got) != 1 || got[0] != "api nl true false true" {
+	if code != 200 || !strings.Contains(string(body), "Wireguard1") || len(got) != 1 || got[0] != "api nl false false true" {
 		t.Fatalf("import %d %s %v", code, body, got)
 	}
-	if code, _ = e.do(t, "POST", "/api/v1/tunnels/import", adminToken, map[string]any{"name": "nl", "key": "x", "apply": false, "replace": true}); code != 200 || got[1] != "api nl false true false" {
+	if code, _ = e.do(t, "POST", "/api/v1/tunnels/import", adminToken, map[string]any{"name": "nl", "key": "x", "apply": true, "replace": true}); code != 200 || got[1] != "api nl true true false" {
 		t.Errorf("import options %v", got)
 	}
 	if code, body = e.do(t, "DELETE", "/api/v1/tunnels/main", adminToken, nil); code != http.StatusUnprocessableEntity {

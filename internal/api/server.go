@@ -49,7 +49,7 @@ type Server struct {
 	Tunnels  *awg.Manager // nil or empty = no tunnels configured
 	Servers  ServerOps    // nil = no managed servers
 	// ImportKey / ForgetKey add and remove imported client keys (app).
-	ImportKey func(ctx context.Context, trigger, name string, key []byte, apply, replace bool) (*awg.Result, error)
+	ImportKey func(ctx context.Context, trigger, name string, key []byte, apply, replace bool) (*KeyImport, error)
 	ForgetKey func(ctx context.Context, trigger, name string) (*awg.Result, error)
 	Router    StateReader
 	// Checks returns the latest health results (nil = none yet).

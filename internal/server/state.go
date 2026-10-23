@@ -39,6 +39,18 @@ type State struct {
 	// DeployedHash is the sha256 of the last configuration written to the host.
 	DeployedHash string    `json:"deployed_hash,omitempty"`
 	DeployedAt   time.Time `json:"deployed_at,omitzero"`
+	// Amnezia is set for a server installed by the AmneziaVPN app and adopted
+	// from its admin key: its interface stays as the app made it.
+	Amnezia *AmneziaHost `json:"amnezia,omitempty"`
+}
+
+// AmneziaHost locates the AWG container of an Amnezia server.
+type AmneziaHost struct {
+	Container  string `json:"container"`   // amnezia-awg
+	Interface  string `json:"interface"`   // wg0
+	ConfigPath string `json:"config_path"` // inside the container
+	ListenPort int    `json:"listen_port"`
+	Subnet     string `json:"subnet"` // 10.8.1.0/24
 }
 
 // Peer returns the peer by name.
@@ -51,9 +63,13 @@ func (s *State) Peer(name string) (*Peer, bool) {
 	return nil, false
 }
 
-// NextAddress returns the lowest free host address in the subnet.
-func (s *State) NextAddress(subnet netip.Prefix) (netip.Addr, error) {
+// NextAddress returns the lowest free host address in the subnet; extra
+// lists addresses taken by peers awgkeen does not manage.
+func (s *State) NextAddress(subnet netip.Prefix, extra ...netip.Addr) (netip.Addr, error) {
 	used := map[netip.Addr]bool{}
+	for _, a := range extra {
+		used[a] = true
+	}
 	if p, err := netip.ParsePrefix(s.Address); err == nil {
 		used[p.Addr()] = true
 	}

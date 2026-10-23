@@ -35,13 +35,13 @@ func withServer(cfgPath, name string, fn func(a *app.App, srv string, m *server.
 }
 
 func newServerCmd(cfgPath *string) *cobra.Command {
-	cmd := &cobra.Command{Use: "server", Short: "Run your own AmneziaWG server (VPS over SSH or this machine)"}
+	cmd := &cobra.Command{Use: "server", Short: "Run your own AmneziaWG server (VPS over SSH or this machine) or manage an Amnezia one"}
 	var name string
-	cmd.PersistentFlags().StringVarP(&name, "server", "s", "", "server name from servers: in the config (default: the only one)")
+	cmd.PersistentFlags().StringVarP(&name, "server", "s", "", "server name (config servers: or imported; default: the only one)")
 
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List configured servers",
+		Short: "List servers: from the config and imported from Amnezia admin keys",
 		RunE: func(c *cobra.Command, _ []string) error {
 			a, err := app.New(*cfgPath)
 			if err != nil {
@@ -50,22 +50,29 @@ func newServerCmd(cfgPath *string) *cobra.Command {
 			defer func() { _ = a.Close() }()
 			tw := tabwriter.NewWriter(c.OutOrStdout(), 0, 8, 2, ' ', 0)
 			fmt.Fprintln(tw, "SERVER\tHOST\tENDPOINT\tSUBNET\tPEERS\tDEPLOYED")
-			for _, sc := range a.Config.Servers {
-				sc = sc.WithDefaults()
-				host := sc.Host
-				if sc.Local {
+			for _, n := range a.ServerNames() {
+				sc, _ := a.ServerConfig(n)
+				host, endpoint, subnet := sc.Host, sc.ClientEndpoint(), sc.Subnet
+				switch {
+				case sc.Local:
 					host = "(local)"
+				case sc.Amnezia:
+					host += " (Amnezia)"
+					endpoint, subnet = sc.Endpoint, "-"
 				}
 				peers, deployed := "not initialized", "-"
-				if m, err := a.Server(sc.Name); err == nil {
+				if m, err := a.Server(n); err == nil {
 					if st, err := m.Load(); err == nil {
 						peers = fmt.Sprint(len(st.Peers))
 						if !st.DeployedAt.IsZero() {
 							deployed = st.DeployedAt.Local().Format("2006-01-02 15:04")
 						}
+						if h := st.Amnezia; h != nil {
+							endpoint, subnet = fmt.Sprintf("%s:%d", sc.Endpoint, h.ListenPort), h.Subnet
+						}
 					}
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", sc.Name, host, sc.ClientEndpoint(), sc.Subnet, peers, deployed)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", n, host, endpoint, subnet, peers, deployed)
 			}
 			return tw.Flush()
 		},
@@ -74,7 +81,7 @@ func newServerCmd(cfgPath *string) *cobra.Command {
 	var force bool
 	initCmd := &cobra.Command{
 		Use:   "init",
-		Short: "Generate the server keys, address and obfuscation parameters (local, no host access)",
+		Short: "Generate the server keys, address and obfuscation parameters (Amnezia server: read them from its container)",
 		RunE: func(c *cobra.Command, _ []string) error {
 			return withServer(*cfgPath, name, func(a *app.App, srv string, m *server.Manager) error {
 				st, err := a.InitServer(c.Context(), syncer.TriggerCLI, srv, force)
@@ -82,6 +89,11 @@ func newServerCmd(cfgPath *string) *cobra.Command {
 					return err
 				}
 				w := c.OutOrStdout()
+				if st.Amnezia != nil {
+					fmt.Fprintf(w, "Amnezia server %s read: container %s, interface %s, port %d, network %s\n", srv, st.Amnezia.Container, st.Amnezia.Interface, st.Amnezia.ListenPort, st.Amnezia.Subnet)
+					fmt.Fprintf(w, "next: awgkeen peer add -s %s NAME\n", srv)
+					return nil
+				}
 				fmt.Fprintf(w, "server %s initialized: address %s, public key %s\n", srv, st.Address, st.Keys.Public)
 				fmt.Fprintf(w, "obfuscation: %s\n", strings.Join(st.Params.Lines(), ", "))
 				fmt.Fprintf(w, "next: awgkeen server install (once), awgkeen peer add NAME\n")
@@ -158,7 +170,53 @@ func newServerCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(list, initCmd, install, plan, deploy, status)
+	var replace bool
+	importCmd := &cobra.Command{
+		Use:   "import NAME vpn://ADMIN-KEY|FILE|-",
+		Short: "Register a server installed by the AmneziaVPN app from its admin (full access) key",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(c *cobra.Command, args []string) error {
+			data, err := readKeyArg(c, args[1])
+			if err != nil {
+				return err
+			}
+			if !server.IsAdminKey(data) {
+				_, err := server.ParseAdminKey(string(data))
+				return fmt.Errorf("%w; import client keys with `awgkeen awg import`", err)
+			}
+			a, err := app.New(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = a.Close() }()
+			res, err := a.ImportKey(c.Context(), syncer.TriggerCLI, args[0], data, false, replace)
+			if res != nil {
+				printKeyImport(c.OutOrStdout(), res)
+			}
+			return err
+		},
+	}
+	importCmd.Flags().BoolVar(&replace, "replace", false, "replace the credentials of an imported server")
+
+	remove := &cobra.Command{
+		Use:   "remove NAME",
+		Short: "Forget an imported server and its credentials (issued clients keep working)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			a, err := app.New(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = a.Close() }()
+			if err := a.ForgetServer(args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(c.OutOrStdout(), "server %s forgotten; its clients are still on the server\n", args[0])
+			return nil
+		},
+	}
+
+	cmd.AddCommand(list, initCmd, install, importCmd, plan, deploy, status, remove)
 	return cmd
 }
 
@@ -196,6 +254,7 @@ func newPeerCmd(cfgPath *string) *cobra.Command {
 	}
 
 	var show showFlags
+	var asTunnel bool
 	add := &cobra.Command{
 		Use:   "add NAME",
 		Short: "Create a client (address, keys) and deploy; prints its configuration",
@@ -212,11 +271,24 @@ func newPeerCmd(cfgPath *string) *cobra.Command {
 				} else {
 					fmt.Fprintln(w, "not deployed yet: run `awgkeen server deploy`")
 				}
+				if asTunnel {
+					conf, err := m.ClientConf(args[0])
+					if err != nil {
+						return err
+					}
+					res, err := a.ImportKey(c.Context(), syncer.TriggerCLI, srv, []byte(conf), false, false)
+					if err != nil {
+						return err
+					}
+					printKeyImport(c.OutOrStdout(), res)
+					return nil
+				}
 				return show.print(c.OutOrStdout(), m, args[0])
 			})
 		},
 	}
 	show.bind(add)
+	add.Flags().BoolVar(&asTunnel, "as-tunnel", false, "also add the client to this awgkeen as tunnel <server> for the router (not applied)")
 
 	list := &cobra.Command{
 		Use:   "list",

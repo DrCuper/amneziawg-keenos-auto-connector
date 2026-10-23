@@ -29,7 +29,16 @@ type Config struct {
 	KeyFile         string `yaml:"key_file"`
 	KnownHostsFile  string `yaml:"known_hosts_file"`
 	InsecureHostKey bool   `yaml:"insecure_host_key"`
-	Sudo            bool   `yaml:"sudo"`
+	// TrustOnFirstUse records the host key into known_hosts_file on the
+	// first connection (servers imported from an admin key).
+	TrustOnFirstUse bool `yaml:"trust_on_first_use"`
+	Sudo            bool `yaml:"sudo"`
+
+	// Amnezia manages a server installed by the AmneziaVPN app: peers are
+	// added to its Docker container's config, the rest is left as is.
+	Amnezia bool `yaml:"amnezia"`
+	// Container is the AWG container (default: detect amnezia-awg*).
+	Container string `yaml:"container"`
 
 	// Interface is the awg-quick interface name (default awg0).
 	Interface string `yaml:"interface"`
@@ -137,12 +146,21 @@ func (c Config) Validate() error {
 		if c.KnownHostsFile == "" && !c.InsecureHostKey {
 			bad("known_hosts_file is required unless insecure_host_key is true")
 		}
+		if c.TrustOnFirstUse && c.KnownHostsFile == "" {
+			bad("trust_on_first_use needs known_hosts_file (where the first host key is recorded)")
+		}
 	}
 	if !ifaceName.MatchString(c.Interface) {
 		bad("interface %q is not a valid name", c.Interface)
 	}
 	if !safePath.MatchString(c.ConfigPath) || strings.Contains(c.ConfigPath, "..") {
 		bad("config_path %q must be an absolute path without special characters", c.ConfigPath)
+	}
+	if c.Container != "" && !containerName.MatchString(c.Container) {
+		bad("container %q is not a valid name", c.Container)
+	}
+	if c.Container != "" && !c.Amnezia {
+		bad("container is only used with amnezia: true")
 	}
 	if c.NATInterface != "" && !ifaceName.MatchString(c.NATInterface) {
 		bad("nat_interface %q is not a valid name", c.NATInterface)

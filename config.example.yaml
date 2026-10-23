@@ -114,6 +114,10 @@ servers: []
 #    key_file: /etc/awgkeen/vps_ed25519   # or password: ...
 #    known_hosts_file: /etc/awgkeen/known_hosts   # ssh-keyscan 203.0.113.10 > known_hosts
 #    # insecure_host_key: false
+#    # trust_on_first_use: false   # record the host key into known_hosts_file on first connect
+#    # amnezia: false              # server installed by the AmneziaVPN app (Docker container
+#    # container: amnezia-awg      #   amnezia-awg; awgkeen adds only its own peers); servers
+#                                  #   from admin keys (`awgkeen awg import`) are set up like this
 #    endpoint: vpn.example.com     # public host[:port] written into client configs (required)
 #    listen_port: 51820
 #    subnet: 10.8.1.0/24           # the server takes .1, clients .2, .3, ...

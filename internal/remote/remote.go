@@ -81,6 +81,9 @@ type SSHConfig struct {
 	KeyFile         string
 	KnownHostsFile  string
 	InsecureHostKey bool
+	// TrustOnFirstUse accepts and records the host key into KnownHostsFile
+	// while that file is missing or empty; later keys must match it.
+	TrustOnFirstUse bool
 	Sudo            bool // prefix scripts with `sudo -n` (non-root user)
 	Timeout         time.Duration
 }
@@ -126,6 +129,8 @@ func NewSSH(cfg SSHConfig) (*SSH, error) {
 	switch {
 	case cfg.InsecureHostKey:
 		hostKey = ssh.InsecureIgnoreHostKey() //nolint:gosec // explicit operator opt-in
+	case cfg.TrustOnFirstUse && cfg.KnownHostsFile != "" && emptyFile(cfg.KnownHostsFile):
+		hostKey = tofu(cfg.KnownHostsFile)
 	case cfg.KnownHostsFile != "":
 		cb, err := knownhosts.New(cfg.KnownHostsFile)
 		if err != nil {
@@ -139,6 +144,32 @@ func NewSSH(cfg SSHConfig) (*SSH, error) {
 		cfg.Timeout = 15 * time.Second
 	}
 	return &SSH{cfg: cfg, addr: addr, ccfg: &ssh.ClientConfig{User: cfg.User, Auth: auth, HostKeyCallback: hostKey, Timeout: cfg.Timeout}}, nil
+}
+
+func emptyFile(p string) bool {
+	st, err := os.Stat(p)
+	return err != nil || st.Size() == 0
+}
+
+// tofu records the first host key seen and then insists on it.
+func tofu(path string) ssh.HostKeyCallback {
+	var mu sync.Mutex
+	return func(host string, remote net.Addr, key ssh.PublicKey) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !emptyFile(path) {
+			cb, err := knownhosts.New(path)
+			if err != nil {
+				return err
+			}
+			return cb(host, remote, key)
+		}
+		line := knownhosts.Line([]string{knownhosts.Normalize(host)}, key) + "\n"
+		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+			return fmt.Errorf("ssh: record host key: %w", err)
+		}
+		return nil
+	}
 }
 
 // Close drops the connection.

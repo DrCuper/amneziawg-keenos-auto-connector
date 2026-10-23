@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/api"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/app"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
@@ -159,27 +160,25 @@ func newAWGCmd(cfgPath *string) *cobra.Command {
 		},
 	}
 
-	var noApply, replace bool
+	var applyNow, replace bool
 	importCmd := &cobra.Command{
 		Use:   "import NAME FILE|vpn://KEY|-",
-		Short: "Add a client key of any AmneziaWG server (.conf or vpn://) as a tunnel and import it onto the router",
-		Long: `Stores the key in state_dir/tunnels/NAME.conf (mode 0600) and creates a
-Wireguard<N> interface for it. Works with keys from the AmneziaVPN app, from a
-friend's or provider's server, or from ` + "`awgkeen peer add`" + `. Import several keys
-under different names to use several servers; route domain groups to them
-with ` + "`tunnel: NAME`" + ` in domains.yaml.`,
+		Short: "Add an Amnezia key to awgkeen: a client key becomes a tunnel, an admin key a managed server (the router is not touched)",
+		Long: `Adds what the key gives access to; the router is changed only with --apply
+(or later with ` + "`awgkeen awg apply NAME`" + `).
+
+A client key (.conf or vpn:// from the AmneziaVPN app, a friend's or
+provider's server, or ` + "`awgkeen peer add`" + `) is stored in
+state_dir/tunnels/NAME.conf (0600) as tunnel NAME. Import several keys under
+different names to use several servers; route domain groups to them with
+` + "`tunnel: NAME`" + ` in domains.yaml.
+
+An admin key ("full access" share in the AmneziaVPN app) registers server
+NAME: awgkeen connects over SSH, reads the AmneziaWG container and can then
+issue and revoke clients with ` + "`awgkeen peer ... -s NAME`" + ` without the app.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(c *cobra.Command, args []string) error {
-			var data []byte
-			var err error
-			switch src := args[1]; {
-			case strings.HasPrefix(src, "vpn://"):
-				data = []byte(src)
-			case src == "-":
-				data, err = io.ReadAll(io.LimitReader(c.InOrStdin(), 1<<20))
-			default:
-				data, err = os.ReadFile(src) //nolint:gosec // operator-supplied path
-			}
+			data, err := readKeyArg(c, args[1])
 			if err != nil {
 				return err
 			}
@@ -188,19 +187,15 @@ with ` + "`tunnel: NAME`" + ` in domains.yaml.`,
 				return err
 			}
 			defer func() { _ = a.Close() }()
-			res, err := a.ImportTunnel(c.Context(), syncer.TriggerCLI, args[0], data, !noApply, replace)
-			if res == nil && err == nil {
-				fmt.Fprintf(c.OutOrStdout(), "key saved as tunnel %s; import it with: awgkeen awg apply %s\n", args[0], args[0])
-				return nil
+			res, err := a.ImportKey(c.Context(), syncer.TriggerCLI, args[0], data, applyNow, replace)
+			if res != nil {
+				printKeyImport(c.OutOrStdout(), res)
 			}
-			if res == nil {
-				return err
-			}
-			return reportAWG(c.OutOrStdout(), res, err)
+			return err
 		},
 	}
-	importCmd.Flags().BoolVar(&noApply, "no-apply", false, "only store the key; import onto the router later")
-	importCmd.Flags().BoolVar(&replace, "replace", false, "replace the key of an imported tunnel (e.g. after the server re-issued it)")
+	importCmd.Flags().BoolVar(&applyNow, "apply", false, "also import the tunnel onto the router now (client keys)")
+	importCmd.Flags().BoolVar(&replace, "replace", false, "replace the key of an imported tunnel or server (e.g. after it was re-issued)")
 
 	cmd.AddCommand(inspect, list, plan, apply, importCmd, remove, status)
 	return cmd
@@ -249,6 +244,44 @@ func applyTunnelsOnStart(ctx context.Context, a *app.App) {
 	}
 	if res.Apply != nil && res.Apply.Applied > 0 {
 		a.Logger.Info("awg: tunnels imported", "commands", res.Apply.Applied)
+	}
+}
+
+// readKeyArg reads a key given literally (vpn://...), from stdin (-) or a file.
+func readKeyArg(c *cobra.Command, src string) ([]byte, error) {
+	switch {
+	case strings.HasPrefix(src, "vpn://"):
+		return []byte(src), nil
+	case src == "-":
+		return io.ReadAll(io.LimitReader(c.InOrStdin(), 1<<20))
+	default:
+		return os.ReadFile(src) //nolint:gosec // operator-supplied path
+	}
+}
+
+func printKeyImport(w io.Writer, r *api.KeyImport) {
+	switch r.Kind {
+	case api.KeyServer:
+		fmt.Fprintf(w, "admin key: server %s registered", r.Name)
+		if !r.Adopted {
+			fmt.Fprintln(w, " (not read yet)")
+			return
+		}
+		fmt.Fprintf(w, " and read (clients connect to %s)\n", r.Endpoint)
+		fmt.Fprintf(w, "issue a client: awgkeen peer add -s %s NAME   (for this router: --as-tunnel)\n", r.Name)
+	default:
+		if r.Applied {
+			fmt.Fprintf(w, "tunnel %s imported onto the router:", r.Name)
+			for _, it := range r.Items {
+				fmt.Fprintf(w, " %s", it.Interface)
+			}
+			fmt.Fprintln(w)
+			if r.Plan != "" {
+				fmt.Fprint(w, r.Plan)
+			}
+			return
+		}
+		fmt.Fprintf(w, "client key saved as tunnel %s; the router is unchanged\nput it on the router: awgkeen awg apply %s\n", r.Name, r.Name)
 	}
 }
 

@@ -61,6 +61,9 @@ func (m *Manager) run(ctx context.Context, script string, stdin []byte) (string,
 // An initialized server is kept unless force is set (which invalidates
 // every issued client configuration).
 func (m *Manager) Init(ctx context.Context, force bool) (*State, error) {
+	if m.Config.Amnezia {
+		return m.adopt(ctx, force)
+	}
 	prefix, err := m.Config.Prefix()
 	if err != nil {
 		return nil, err
@@ -87,6 +90,33 @@ func (m *Manager) Init(ctx context.Context, force bool) (*State, error) {
 	})
 }
 
+// adopt reads an Amnezia server's identity from its container. The peers
+// awgkeen issued are kept.
+func (m *Manager) adopt(ctx context.Context, force bool) (*State, error) {
+	if _, err := m.Store.Load(); err == nil && !force {
+		return nil, fmt.Errorf("server %s is already adopted (use --force to re-read it after re-installing in the AmneziaVPN app)", m.Config.Name)
+	}
+	st, err := m.adoptAmnezia(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return m.Store.Update(ctx, func(cur *State) (*State, error) {
+		if cur != nil {
+			st.Peers = cur.Peers
+		}
+		return st, nil
+	})
+}
+
+// effective is the config with what an adopted server dictates.
+func (m *Manager) effective(st *State) Config {
+	c := m.Config
+	if st != nil && st.Amnezia != nil {
+		c.ListenPort, c.Subnet, c.Interface = st.Amnezia.ListenPort, st.Amnezia.Subnet, st.Amnezia.Interface
+	}
+	return c
+}
+
 // Load returns the state.
 func (m *Manager) Load() (*State, error) { return m.Store.Load() }
 
@@ -95,9 +125,21 @@ func (m *Manager) AddPeer(ctx context.Context, name string) (*Peer, error) {
 	if err := ValidatePeerName(name); err != nil {
 		return nil, err
 	}
-	prefix, err := m.Config.Prefix()
+	cur, err := m.Store.Load()
 	if err != nil {
 		return nil, err
+	}
+	prefix, err := m.effective(cur).Prefix()
+	if err != nil {
+		return nil, err
+	}
+	var extra []netip.Addr
+	if cur.Amnezia != nil {
+		conf, err := m.readAmneziaConf(ctx, cur.Amnezia)
+		if err != nil {
+			return nil, err
+		}
+		extra = foreignAddresses(conf)
 	}
 	var added Peer
 	_, err = m.Store.Update(ctx, func(st *State) (*State, error) {
@@ -107,7 +149,7 @@ func (m *Manager) AddPeer(ctx context.Context, name string) (*Peer, error) {
 		if _, ok := st.Peer(name); ok {
 			return nil, fmt.Errorf("peer %q already exists", name)
 		}
-		addr, err := st.NextAddress(prefix)
+		addr, err := st.NextAddress(prefix, extra...)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +240,7 @@ func (m *Manager) ClientConf(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ClientConf(m.Config, st, p), nil
+	return ClientConf(m.effective(st), st, p), nil
 }
 
 // VPNKey returns a peer's Amnezia vpn:// key.
@@ -207,7 +249,7 @@ func (m *Manager) VPNKey(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return VPNKey(m.Config, st, p)
+	return VPNKey(m.effective(st), st, p)
 }
 
 func (m *Manager) peer(name string) (*State, *Peer, error) {
@@ -269,6 +311,10 @@ func (m *Manager) Plan(ctx context.Context) (*DeployPlan, string, *State, error)
 	if err != nil {
 		return nil, "", nil, err
 	}
+	if st.Amnezia != nil {
+		p, want, err := m.planAmnezia(ctx, st)
+		return p, want, st, err
+	}
 	nat, err := m.natInterface(ctx)
 	if err != nil {
 		return nil, "", nil, err
@@ -289,7 +335,15 @@ func (m *Manager) Plan(ctx context.Context) (*DeployPlan, string, *State, error)
 		p.Restart = true
 		p.Changes = append(p.Changes, "~ [Interface] settings (keys, address, port or obfuscation): interface restart")
 	}
-	havePeers, wantPeers := confPeers(have), confPeers(want)
+	diffPeers(p, confPeers(have), confPeers(want))
+	if len(p.Changes) == 0 {
+		p.Changes = append(p.Changes, "~ "+m.Config.ConfigPath+" (formatting)")
+	}
+	return p, want, st, nil
+}
+
+// diffPeers adds +/~/- lines for peers, sorted by name.
+func diffPeers(p *DeployPlan, havePeers, wantPeers map[string]string) {
 	var names []string
 	for k := range wantPeers {
 		names = append(names, k)
@@ -313,10 +367,6 @@ func (m *Manager) Plan(ctx context.Context) (*DeployPlan, string, *State, error)
 	for _, k := range names {
 		p.Changes = append(p.Changes, "- peer "+label(havePeers[k]))
 	}
-	if len(p.Changes) == 0 {
-		p.Changes = append(p.Changes, "~ "+m.Config.ConfigPath+" (formatting)")
-	}
-	return p, want, st, nil
 }
 
 // confPeers maps peer name → "name (address)|fingerprint" from a server
@@ -329,7 +379,7 @@ func confPeers(conf string) map[string]string {
 			l = strings.TrimSpace(l)
 			switch {
 			case strings.HasPrefix(l, "# ") && name == "":
-				name = strings.TrimPrefix(l, "# ")
+				name = strings.TrimPrefix(strings.TrimPrefix(l, "# "), "awgkeen: ")
 			case strings.HasPrefix(l, "PublicKey"):
 				pub = strings.TrimSpace(after(l))
 			case strings.HasPrefix(l, "PresharedKey"):
@@ -364,9 +414,15 @@ func (m *Manager) systemdPath() bool {
 
 // Deploy writes the configuration and brings the interface up or syncs it.
 func (m *Manager) Deploy(ctx context.Context, dryRun bool) (*DeployPlan, error) {
-	p, conf, _, err := m.Plan(ctx)
+	p, conf, st, err := m.Plan(ctx)
 	if err != nil || dryRun || p.Empty() {
 		return p, err
+	}
+	if st.Amnezia != nil {
+		if err := m.deployAmnezia(ctx, st, conf); err != nil {
+			return p, err
+		}
+		return p, m.deployed(ctx, p, conf)
 	}
 	cfg := m.Config
 	q := remote.ShellQuote
@@ -398,16 +454,21 @@ func (m *Manager) Deploy(ctx context.Context, dryRun bool) (*DeployPlan, error) 
 	if _, err := m.run(ctx, script, nil); err != nil {
 		return p, err
 	}
+	return p, m.deployed(ctx, p, conf)
+}
+
+// deployed records a successful deploy.
+func (m *Manager) deployed(ctx context.Context, p *DeployPlan, conf string) error {
 	p.Applied = true
-	_, err = m.Store.Update(ctx, func(st *State) (*State, error) {
+	_, err := m.Store.Update(ctx, func(st *State) (*State, error) {
 		if st == nil {
 			return nil, ErrNotInitialized
 		}
 		st.DeployedHash, st.DeployedAt = Hash(conf), m.now().UTC()
 		return st, nil
 	})
-	m.logger().Info("server: deployed", "server", cfg.Name, "changes", len(p.Changes), "restart", p.Restart)
-	return p, err
+	m.logger().Info("server: deployed", "server", m.Config.Name, "changes", len(p.Changes), "restart", p.Restart)
+	return err
 }
 
 // PeerStatus is the runtime state of one peer (`awg show dump`).
@@ -437,7 +498,7 @@ func (m *Manager) Status(ctx context.Context) (*Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := m.run(ctx, "awg show "+remote.ShellQuote(m.Config.Interface)+" dump", nil)
+	out, err := m.run(ctx, m.dumpScript(st), nil)
 	var ee *remote.ExitError
 	if errors.As(err, &ee) {
 		s := &Status{}
@@ -527,6 +588,9 @@ echo "amneziawg installed"
 
 // Install runs InstallScript on the host.
 func (m *Manager) Install(ctx context.Context) (string, error) {
+	if m.Config.Amnezia {
+		return "", fmt.Errorf("server %s is managed by the AmneziaVPN app: install and update protocols there", m.Config.Name)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 	out, err := m.Runner.Run(ctx, InstallScript, nil)
@@ -543,7 +607,11 @@ func (m *Manager) Check(ctx context.Context) error {
 		return err
 	}
 	if !s.Up {
-		return fmt.Errorf("interface %s is not up on %s", m.Config.Interface, m.Config.Name)
+		iface := m.Config.Interface
+		if st, err := m.Store.Load(); err == nil {
+			iface = m.effective(st).Interface
+		}
+		return fmt.Errorf("interface %s is not up on %s", iface, m.Config.Name)
 	}
 	return nil
 }

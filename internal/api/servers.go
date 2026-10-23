@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -16,6 +17,10 @@ type ServerOps interface {
 	Server(name string) (*server.Manager, error)
 	PeerOp(ctx context.Context, trigger, srv, op, peer string, deploy bool) (*server.Peer, *server.DeployPlan, error)
 	DeployServer(ctx context.Context, trigger, srv string, dryRun bool) (*server.DeployPlan, error)
+	// Imported reports a server registered from an Amnezia admin key;
+	// ForgetServer removes such a registration.
+	Imported(name string) bool
+	ForgetServer(name string) error
 }
 
 // ServerInfo is one server in GET /servers.
@@ -27,6 +32,8 @@ type ServerInfo struct {
 	Interface   string    `json:"interface"`
 	Subnet      string    `json:"subnet"`
 	Initialized bool      `json:"initialized"`
+	Amnezia     bool      `json:"amnezia,omitempty"`  // installed by the AmneziaVPN app
+	Imported    bool      `json:"imported,omitempty"` // from an admin key; can be forgotten
 	PublicKey   string    `json:"public_key,omitempty"`
 	Peers       int       `json:"peers"`
 	DeployedAt  time.Time `json:"deployed_at,omitzero"`
@@ -65,6 +72,7 @@ func (s *Server) serverRoutes(read, write, secret func(string, http.HandlerFunc)
 	write("POST /api/v1/servers/{server}/peers/{peer}/disable", s.peerOp(server.PeerDisable))
 	write("POST /api/v1/servers/{server}/peers/{peer}/enable", s.peerOp(server.PeerEnable))
 	write("POST /api/v1/servers/{server}/deploy", s.serverDeploy)
+	write("DELETE /api/v1/servers/{server}", s.serverForget)
 	// Client configurations carry private keys: full token only.
 	secret("GET /api/v1/servers/{server}/peers/{peer}/conf", s.peerConf)
 	secret("GET /api/v1/servers/{server}/peers/{peer}/qr.png", s.peerQR)
@@ -100,15 +108,34 @@ func (s *Server) serverList(w http.ResponseWriter, _ *http.Request) {
 		}
 		c := m.Config
 		si.Host, si.Local, si.Endpoint, si.Interface, si.Subnet = c.Host, c.Local, c.ClientEndpoint(), c.Interface, c.Subnet
+		si.Amnezia, si.Imported = c.Amnezia, s.Servers.Imported(n)
+		if c.Amnezia { // known only once the container was read
+			si.Endpoint, si.Interface, si.Subnet = c.Endpoint, "—", "—"
+		}
 		switch st, err := m.Load(); {
 		case err == nil:
 			si.Initialized, si.PublicKey, si.Peers, si.DeployedAt = true, st.Keys.Public, len(st.Peers), st.DeployedAt
+			if h := st.Amnezia; h != nil {
+				si.Interface, si.Subnet = h.Interface, h.Subnet
+				si.Endpoint = fmt.Sprintf("%s:%d", c.Endpoint, h.ListenPort)
+			}
 		case !errors.Is(err, server.ErrNotInitialized):
 			si.Error = err.Error()
 		}
 		out = append(out, si)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) serverForget(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.manager(w, r); !ok {
+		return
+	}
+	if err := s.Servers.ForgetServer(r.PathValue("server")); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ServerOpResult{OK: true})
 }
 
 func (s *Server) serverStatus(w http.ResponseWriter, r *http.Request) {

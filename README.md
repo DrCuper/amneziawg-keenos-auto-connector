@@ -139,7 +139,7 @@ awgkeen health [--notify]                 # разовый прогон пров
 awgkeen awg inspect main.conf             # разобрать .conf / vpn:// без секретов (роутер не нужен)
 awgkeen awg list                          # туннели и их интерфейсы
 awgkeen awg plan                          # что изменится на роутере
-awgkeen awg import nl 'vpn://...'         # ключ от уже работающего сервера → новый туннель
+awgkeen awg import nl 'vpn://...'         # ключ клиента → туннель, ключ администратора → сервер (роутер не трогается)
 awgkeen awg apply [main] [--force-keys]   # создать/обновить Wireguard-интерфейс, проверить, сохранить
 awgkeen awg status                        # интерфейс, пиры, handshake, трафик
 awgkeen awg remove main                   # удалить интерфейс туннеля (только созданный awgkeen)
@@ -234,11 +234,15 @@ AmneziaVPN, от друга, провайдера или выданный `awgke
 серверов может быть сколько угодно:
 
 ```sh
-awgkeen awg import nl 'vpn://AAAF...'      # ключ из AmneziaVPN («Поделиться» → ключ)
+awgkeen awg import nl 'vpn://AAAF...'      # ключ из AmneziaVPN («Поделиться» → ключ); роутер не меняется
 awgkeen awg import de /path/to/de.conf     # или .conf; `-` — из stdin
+awgkeen awg apply nl                       # поставить туннель на роутер (или сразу: import ... --apply)
 awgkeen awg import nl new.conf --replace   # сервер перевыпустил ключ
 awgkeen awg remove de                      # удалить интерфейс и забыть ключ
 ```
+
+`awg import` только добавляет ключ в `awgkeen`; роутер меняется по
+`awg apply` (или `--apply`, или при старте `serve` с `awg.apply_on_start`).
 
 Ключи хранятся в `state_dir/tunnels/<имя>.conf` (0600). То же — во вкладке
 «Туннели» веб‑интерфейса и через `POST /api/v1/tunnels/import`
@@ -335,6 +339,29 @@ awgkeen server plan | status        # что изменится на хосте 
 `local: true` управляет машиной, где запущен `awgkeen`. Если сервер не
 поднят, `serve` шлёт алерт `server_down:<name>`. Все операции — в журнале.
 
+### Сервер, установленный приложением AmneziaVPN
+
+Если сервер уже поднят через AmneziaVPN, достаточно его ключа администратора
+(в приложении: сервер → «Поделиться» → «Полный доступ»):
+
+```sh
+awgkeen awg import am 'vpn://...'           # или: awgkeen server import am 'vpn://...'
+awgkeen peer add -s am phone --qr           # выдать ключ без приложения
+awgkeen peer add -s am keenetic --as-tunnel # клиент для своего роутера → туннель am
+awgkeen awg apply am                        # поставить его на роутер
+awgkeen server remove am                    # забыть сервер (выданные ключи работают)
+```
+
+`awgkeen` подключается по SSH (host key запоминается при первом подключении,
+не‑root пользователь — через `sudo`), читает контейнер `amnezia-awg`
+(`/opt/amnezia/awg/wg0.conf`) и добавляет туда только своих клиентов с
+пометкой `# awgkeen: <имя>`: настройки сервера и клиенты приложения не
+меняются, адреса не пересекаются, применение — `syncconf` без разрыва.
+Доступ хранится в `state_dir/servers/am.server.yaml` (0600). В списке
+клиентов приложения клиенты `awgkeen` по имени не видны. Если сервер
+переустановлен в приложении, деплой остановится — выполните
+`awgkeen server init -s am --force` и перевыпустите клиентов.
+
 ## REST API и веб‑интерфейс
 
 ```yaml
@@ -369,7 +396,8 @@ curl -H "$H" http://host:8080/metrics
 | `GET /api/v1/journal[?group&kind&status&since&dry_run&limit]`, `/journal/{id}` | журнал |
 | `GET /api/v1/alerts`, `/checks`, `/router` | алерты, проверки, состояние роутера (без ключей) |
 | `GET /api/v1/tunnels`, `/tunnels/status`; `POST /api/v1/tunnels/apply` | AWG‑туннели |
-| `POST /api/v1/tunnels/import`; `DELETE /api/v1/tunnels/{name}` | `{"name","key","apply":true,"replace":false}` — добавить ключ любого сервера; удалить импортированный |
+| `POST /api/v1/tunnels/import`; `DELETE /api/v1/tunnels/{name}` | `{"name","key","apply":false,"replace":false}` — ключ клиента (туннель) или администратора (сервер); удалить импортированный туннель |
+| `DELETE /api/v1/servers/{s}` | забыть сервер, импортированный по ключу администратора |
 | `GET /api/v1/servers`, `/servers/{s}/status`, `/servers/{s}/peers` | серверы, состояние, клиенты (без ключей) |
 | `POST /api/v1/servers/{s}/peers` | `{"name":"phone","deploy":true}` — выдать ключ |
 | `POST /api/v1/servers/{s}/peers/{p}/rotate`, `/disable`, `/enable`; `DELETE /api/v1/servers/{s}/peers/{p}` | операции с клиентом (`{"deploy":false}` — без деплоя) |

@@ -307,24 +307,9 @@ func splitList(v string) []string {
 // key: base64url of a Qt-compressed (4-byte length + zlib) or plain JSON
 // document whose AWG container carries `last_config` with a `config` field.
 func DecodeVPNKey(key string) (string, error) {
-	raw := strings.TrimSpace(strings.TrimPrefix(key, "vpn://"))
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(raw, "="))
+	doc, err := DecodeVPNDocument(key)
 	if err != nil {
-		return "", errors.New("vpn:// key: not base64url")
-	}
-	if len(data) > 4 && data[0] != '{' {
-		zr, err := zlib.NewReader(bytes.NewReader(data[4:]))
-		if err != nil {
-			return "", errors.New("vpn:// key: not a compressed Amnezia document")
-		}
-		data, err = io.ReadAll(io.LimitReader(zr, 4<<20))
-		if err != nil {
-			return "", errors.New("vpn:// key: corrupt compressed data")
-		}
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return "", errors.New("vpn:// key: not a JSON document")
+		return "", err
 	}
 	conf := findConfig(doc)
 	if conf == "" {
@@ -334,6 +319,31 @@ func DecodeVPNKey(key string) (string, error) {
 		conf = strings.ReplaceAll(conf, k, v)
 	}
 	return conf, nil
+}
+
+// DecodeVPNDocument decodes a `vpn://` key into its JSON document (client
+// keys carry containers[].awg.last_config, admin keys carry SSH credentials).
+func DecodeVPNDocument(key string) (map[string]any, error) {
+	raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(key), "vpn://"))
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(raw, "="))
+	if err != nil {
+		return nil, errors.New("vpn:// key: not base64url")
+	}
+	if len(data) > 4 && data[0] != '{' {
+		zr, err := zlib.NewReader(bytes.NewReader(data[4:]))
+		if err != nil {
+			return nil, errors.New("vpn:// key: not a compressed Amnezia document")
+		}
+		data, err = io.ReadAll(io.LimitReader(zr, 4<<20))
+		if err != nil {
+			return nil, errors.New("vpn:// key: corrupt compressed data")
+		}
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, errors.New("vpn:// key: not a JSON document")
+	}
+	return doc, nil
 }
 
 // findConfig looks for containers[].<proto>.last_config.config.
