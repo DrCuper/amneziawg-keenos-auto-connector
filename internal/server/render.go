@@ -117,6 +117,7 @@ func VPNKey(c Config, s *State, p *Peer) (string, error) {
 		"server_pub_key": s.Keys.Public, "mtu": strconv.Itoa(c.MTU),
 		"Jc": strconv.Itoa(s.Params.Jc), "Jmin": strconv.Itoa(s.Params.Jmin), "Jmax": strconv.Itoa(s.Params.Jmax),
 		"S1": strconv.Itoa(s.Params.S1), "S2": strconv.Itoa(s.Params.S2),
+		"S3": strconv.Itoa(s.Params.S3), "S4": strconv.Itoa(s.Params.S4),
 		"H1": s.Params.H1, "H2": s.Params.H2, "H3": s.Params.H3, "H4": s.Params.H4,
 	}
 	lastJSON, err := json.Marshal(last)
@@ -127,6 +128,7 @@ func VPNKey(c Config, s *State, p *Peer) (string, error) {
 		"last_config": string(lastJSON), "port": port, "transport_proto": "udp",
 		"Jc": strconv.Itoa(s.Params.Jc), "Jmin": strconv.Itoa(s.Params.Jmin), "Jmax": strconv.Itoa(s.Params.Jmax),
 		"S1": strconv.Itoa(s.Params.S1), "S2": strconv.Itoa(s.Params.S2),
+		"S3": strconv.Itoa(s.Params.S3), "S4": strconv.Itoa(s.Params.S4),
 		"H1": s.Params.H1, "H2": s.Params.H2, "H3": s.Params.H3, "H4": s.Params.H4,
 	}
 	doc := map[string]any{
