@@ -131,9 +131,18 @@ func VPNKey(c Config, s *State, p *Peer) (string, error) {
 		"S3": strconv.Itoa(s.Params.S3), "S4": strconv.Itoa(s.Params.S4),
 		"H1": s.Params.H1, "H2": s.Params.H2, "H3": s.Params.H3, "H4": s.Params.H4,
 	}
+	// Identify the protocol from persisted parameters, not Config.AWG2 (which
+	// only controls generation). Imported AWG2 state may have that flag unset;
+	// conversely, changing it must not relabel an existing AWG1 configuration.
+	container := "amnezia-awg"
+	if s.Params.S3 != 0 || s.Params.S4 != 0 ||
+		strings.ContainsAny(s.Params.H1+s.Params.H2+s.Params.H3+s.Params.H4, "-") ||
+		s.Params.I != [5]string{} {
+		container = "amnezia-awg2"
+	}
 	doc := map[string]any{
-		"containers":       []any{map[string]any{"container": "amnezia-awg", "awg": awg}},
-		"defaultContainer": "amnezia-awg",
+		"containers":       []any{map[string]any{"container": container, "awg": awg}},
+		"defaultContainer": container,
 		"description":      c.Name + " / " + p.Name,
 		"hostName":         host,
 	}

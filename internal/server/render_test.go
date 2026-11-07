@@ -13,7 +13,7 @@ import (
 )
 
 // Decode the actual share wire format, including Qt's uncompressed-length prefix.
-func decodeVPNShare(t *testing.T, key string) (map[string]any, map[string]any, map[string]any) {
+func decodeVPNShare(t *testing.T, key, wantContainer string) (map[string]any, map[string]any, map[string]any) {
 	t.Helper()
 	if !strings.HasPrefix(key, "vpn://") {
 		t.Fatal("share lacks vpn scheme")
@@ -46,7 +46,7 @@ func decodeVPNShare(t *testing.T, key string) (map[string]any, map[string]any, m
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.DefaultContainer != "amnezia-awg" || len(doc.Containers) != 1 || doc.Containers[0].Container != "amnezia-awg" {
+	if doc.DefaultContainer != wantContainer || len(doc.Containers) != 1 || doc.Containers[0].Container != wantContainer {
 		t.Fatal("unexpected protocol/container identity")
 	}
 	awg := doc.Containers[0].AWG
@@ -83,16 +83,57 @@ func vpnShareFixture() (Config, *State, *Peer) {
 	return c, s, &s.Peers[0]
 }
 
+func TestVPNKeyAWG2ContainerIdentity(t *testing.T) {
+	c, s, p := vpnShareFixture()
+	key, err := VPNKey(c, s, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, "vpn://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zlib.NewReader(bytes.NewReader(raw[4:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	var doc struct {
+		DefaultContainer string `json:"defaultContainer"`
+		Containers       []struct {
+			Container string         `json:"container"`
+			AWG       map[string]any `json:"awg"`
+			AWG2      map[string]any `json:"awg2"`
+		} `json:"containers"`
+	}
+	if err := json.NewDecoder(zr).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.DefaultContainer != "amnezia-awg2" {
+		t.Errorf("defaultContainer = %q, want amnezia-awg2", doc.DefaultContainer)
+	}
+	if len(doc.Containers) != 1 {
+		t.Fatal("want exactly one container")
+	}
+	container := doc.Containers[0]
+	if container.Container != "amnezia-awg2" {
+		t.Errorf("container = %q, want amnezia-awg2", container.Container)
+	}
+	if container.AWG == nil || container.AWG["last_config"] == nil || container.AWG2 != nil {
+		t.Error("modern container must retain protocol metadata under awg, not awg2")
+	}
+}
+
 func TestVPNKeyAWG2Metadata(t *testing.T) {
 	c, s, p := vpnShareFixture()
-	checkVPNKeyMetadata(t, c, s, p)
+	checkVPNKeyMetadata(t, c, s, p, "amnezia-awg2")
 }
 
 func TestVPNKeyAWG2ZeroPadding(t *testing.T) {
 	for _, padding := range [][2]int{{0, 47}, {23, 0}, {0, 0}} {
 		c, s, p := vpnShareFixture()
 		s.Params.S3, s.Params.S4 = padding[0], padding[1]
-		checkVPNKeyMetadata(t, c, s, p)
+		checkVPNKeyMetadata(t, c, s, p, "amnezia-awg2")
 	}
 }
 
@@ -106,7 +147,7 @@ func TestVPNKeyImportedAWG2WithoutGenerationFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Params = si.Params
-	checkVPNKeyMetadata(t, c, s, p)
+	checkVPNKeyMetadata(t, c, s, p, "amnezia-awg2")
 }
 
 func TestVPNKeyAWG1Compatibility(t *testing.T) {
@@ -114,14 +155,49 @@ func TestVPNKeyAWG1Compatibility(t *testing.T) {
 	c.AWG2 = false
 	s.Params.S3, s.Params.S4 = 0, 0
 	s.Params.H1, s.Params.H2, s.Params.H3, s.Params.H4 = "1111", "2222", "3333", "4444"
-	checkVPNKeyMetadata(t, c, s, p)
+	checkVPNKeyMetadata(t, c, s, p, "amnezia-awg")
 	conf := ClientConf(c, s, p)
 	if strings.Contains(conf, "S3 =") || strings.Contains(conf, "S4 =") || strings.Contains(conf, "1000-1999") {
 		t.Error("AWG1 canonical configuration gained AWG2 parameters")
 	}
 }
 
-func checkVPNKeyMetadata(t *testing.T, c Config, s *State, p *Peer) {
+func TestVPNKeyContainerIdentityFromPersistedParams(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		generationFlag bool
+		s3, s4         int
+		rangeIndex     int
+		signature      bool
+		want           string
+	}{
+		{name: "AWG1 flag drift", generationFlag: true, want: "amnezia-awg"},
+		{name: "S3 only", s3: 23, want: "amnezia-awg2"},
+		{name: "S4 only", s4: 47, want: "amnezia-awg2"},
+		{name: "H1 range zero padding", rangeIndex: 1, want: "amnezia-awg2"},
+		{name: "H2 range zero padding", rangeIndex: 2, want: "amnezia-awg2"},
+		{name: "H3 range zero padding", rangeIndex: 3, want: "amnezia-awg2"},
+		{name: "H4 range zero padding", rangeIndex: 4, want: "amnezia-awg2"},
+		{name: "imported signature only", signature: true, want: "amnezia-awg2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, s, p := vpnShareFixture()
+			c.AWG2 = tc.generationFlag
+			s.Params.S3, s.Params.S4 = tc.s3, tc.s4
+			hs := [4]string{"1111", "2222", "3333", "4444"}
+			if tc.rangeIndex != 0 {
+				hs[tc.rangeIndex-1] += "-4999"
+			}
+			s.Params.H1, s.Params.H2, s.Params.H3, s.Params.H4 = hs[0], hs[1], hs[2], hs[3]
+			if tc.signature {
+				s.Params.I[4] = "<b 0x05>"
+			}
+			checkVPNKeyMetadata(t, c, s, p, tc.want)
+		})
+	}
+}
+
+func checkVPNKeyMetadata(t *testing.T, c Config, s *State, p *Peer, wantContainer string) {
 	t.Helper()
 	before, err := json.Marshal(s)
 	if err != nil {
@@ -133,7 +209,7 @@ func checkVPNKeyMetadata(t *testing.T, c Config, s *State, p *Peer) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	awg, last, canonical := decodeVPNShare(t, key)
+	awg, last, canonical := decodeVPNShare(t, key, wantContainer)
 	for _, field := range []string{"Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"} {
 		want, ok := canonical[field].(string)
 		// Params.Lines omits S3/S4 when both are zero; their effective value is zero.
