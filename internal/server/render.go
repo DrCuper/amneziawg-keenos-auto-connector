@@ -117,6 +117,7 @@ func VPNKey(c Config, s *State, p *Peer) (string, error) {
 		"server_pub_key": s.Keys.Public, "mtu": strconv.Itoa(c.MTU),
 		"Jc": strconv.Itoa(s.Params.Jc), "Jmin": strconv.Itoa(s.Params.Jmin), "Jmax": strconv.Itoa(s.Params.Jmax),
 		"S1": strconv.Itoa(s.Params.S1), "S2": strconv.Itoa(s.Params.S2),
+		"S3": strconv.Itoa(s.Params.S3), "S4": strconv.Itoa(s.Params.S4),
 		"H1": s.Params.H1, "H2": s.Params.H2, "H3": s.Params.H3, "H4": s.Params.H4,
 	}
 	lastJSON, err := json.Marshal(last)
@@ -127,11 +128,21 @@ func VPNKey(c Config, s *State, p *Peer) (string, error) {
 		"last_config": string(lastJSON), "port": port, "transport_proto": "udp",
 		"Jc": strconv.Itoa(s.Params.Jc), "Jmin": strconv.Itoa(s.Params.Jmin), "Jmax": strconv.Itoa(s.Params.Jmax),
 		"S1": strconv.Itoa(s.Params.S1), "S2": strconv.Itoa(s.Params.S2),
+		"S3": strconv.Itoa(s.Params.S3), "S4": strconv.Itoa(s.Params.S4),
 		"H1": s.Params.H1, "H2": s.Params.H2, "H3": s.Params.H3, "H4": s.Params.H4,
 	}
+	// Identify the protocol from persisted parameters, not Config.AWG2 (which
+	// only controls generation). Imported AWG2 state may have that flag unset;
+	// conversely, changing it must not relabel an existing AWG1 configuration.
+	container := "amnezia-awg"
+	if s.Params.S3 != 0 || s.Params.S4 != 0 ||
+		strings.ContainsAny(s.Params.H1+s.Params.H2+s.Params.H3+s.Params.H4, "-") ||
+		s.Params.I != [5]string{} {
+		container = "amnezia-awg2"
+	}
 	doc := map[string]any{
-		"containers":       []any{map[string]any{"container": "amnezia-awg", "awg": awg}},
-		"defaultContainer": "amnezia-awg",
+		"containers":       []any{map[string]any{"container": container, "awg": awg}},
+		"defaultContainer": container,
 		"description":      c.Name + " / " + p.Name,
 		"hostName":         host,
 	}
