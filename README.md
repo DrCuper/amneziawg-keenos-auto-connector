@@ -476,3 +476,7 @@ openspec validate --strict
 Все этапы из [`openspec/project.md`](openspec/project.md) реализованы. Не
 проверено на реальном оборудовании: применение на роутере (этапы 1–5) и
 развёртывание на настоящем VPS (этап 6).
+
+## Общий вход SSO
+
+Для панели за локальным sso gate включить `api.sso: true`, `api.public_url: https://awgkeen.drcuper.com`, `api.trusted_proxies: [127.0.0.1, "::1"]`, `api.listen: 127.0.0.1:8083`. Сервис `awgkeen` в SSO использует роли viewer/admin и подтверждение входа через бота. Viewer читает, admin меняет и получает конфиги клиентов; изменения браузера требуют точный Origin. Панель скрывает поле токена и удаляет сохранённый токен из localStorage. Машинные Bearer token/read_token остаются для прямых защищённых подключений. Не включать `/api/v1/` в public_paths gate. Без sso:true прежняя схема сохраняется. [Развёртывание и откат](https://github.com/DrCuper/single-sign-on/blob/main/docs/service-rollout.md).

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/awg"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/server"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/sso"
+	"gopkg.in/yaml.v3"
 )
 
 // Environment variables that override secrets in the YAML file.
@@ -54,6 +54,9 @@ type Config struct {
 
 // API configures the REST API and web UI of `serve` (stage 5).
 type API struct {
+	SSO            bool     `yaml:"sso"`
+	PublicURL      string   `yaml:"public_url"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
 	// Listen is host:port; empty disables the API.
 	Listen string `yaml:"listen"`
 	// Token grants full access, ReadToken read-only access (GET).
@@ -461,6 +464,14 @@ func (a *API) validate() []error {
 		return nil
 	}
 	var errs []error
+	if a.SSO {
+		if err := sso.ValidateOrigin(a.PublicURL); err != nil {
+			errs = append(errs, fmt.Errorf("api.public_url: %w", err))
+		}
+		if _, err := sso.ParseProxies(a.TrustedProxies); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	host, port, err := net.SplitHostPort(a.Listen)
 	if err != nil || port == "" {
 		return []error{fmt.Errorf("api.listen %q must be host:port", a.Listen)}

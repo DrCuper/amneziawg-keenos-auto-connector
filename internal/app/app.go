@@ -401,10 +401,11 @@ func (a *App) NewAPI(st store.Store, s *syncer.Syncer, ops *sync.Mutex, checks f
 		MaxChanges: a.Config.Journal.MaxChanges,
 		Token:      a.Config.API.Token,
 		ReadToken:  a.Config.API.ReadToken,
-		UI:         a.Config.API.UIEnabled(),
-		Ops:        ops,
-		Version:    version,
-		Logger:     a.Logger,
+		SSO:        a.Config.API.SSO, PublicURL: a.Config.API.PublicURL, TrustedProxies: a.Config.API.TrustedProxies,
+		UI:      a.Config.API.UIEnabled(),
+		Ops:     ops,
+		Version: version,
+		Logger:  a.Logger,
 	}
 	srv.Tunnels = a.Tunnels()
 	srv.ImportKey, srv.ForgetKey = a.ImportKey, a.ForgetTunnel

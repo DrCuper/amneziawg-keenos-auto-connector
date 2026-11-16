@@ -25,6 +25,7 @@ import (
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/journal"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/notify"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/router"
+	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/sso"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/store"
 	"github.com/DrCuper/amneziawg-keenos-auto-connector/internal/syncer"
 )
@@ -39,6 +40,9 @@ type StateReader interface {
 
 // Server is the HTTP API. Fields are set once before Handler is called.
 type Server struct {
+	SSO            bool
+	PublicURL      string
+	TrustedProxies []string
 	// Syncer is used for sync, rollback and manual edits; its reports carry
 	// syncer.TriggerAPI.
 	Syncer   *syncer.Syncer
@@ -100,6 +104,17 @@ func (s *Server) Handler() http.Handler {
 	read := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(false, h)) }
 	write := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.auth(true, s.exclusive(h))) }
 
+	read("GET /api/v1/auth", func(w http.ResponseWriter, r *http.Request) {
+		if s.SSO {
+			proxies, _ := sso.ParseProxies(s.TrustedProxies)
+			id, err := sso.Read(r, proxies)
+			if err == nil {
+				writeJSON(w, 200, map[string]any{"sso": true, "name": id.Name, "role": id.Role})
+				return
+			}
+		}
+		writeJSON(w, 200, map[string]bool{"sso": false})
+	})
 	read("GET /api/v1/status", s.status)
 	read("GET /api/v1/groups", s.groups)
 	read("GET /api/v1/groups/{name}", s.group)
@@ -131,6 +146,17 @@ func (s *Server) Handler() http.Handler {
 				writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 				return
 			}
+			if s.SSO {
+				proxies, err := sso.ParseProxies(s.TrustedProxies)
+				if err != nil {
+					writeError(w, 503, errors.New("invalid SSO configuration"))
+					return
+				}
+				if _, err = sso.Read(r, proxies); err != nil {
+					writeError(w, 403, errors.New("use SSO gate"))
+					return
+				}
+			}
 			files.ServeHTTP(w, r)
 		})
 	}
@@ -154,7 +180,25 @@ func (s *Server) secure(next http.Handler) http.Handler {
 // auth checks the bearer token. Write endpoints need the full token.
 func (s *Server) auth(write bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Token == "" && s.ReadToken == "" {
+		if s.SSO && r.Header.Get("Authorization") == "" {
+			proxies, err := sso.ParseProxies(s.TrustedProxies)
+			if err != nil {
+				writeError(w, 503, errors.New("invalid SSO configuration"))
+				return
+			}
+			id, err := sso.Read(r, proxies)
+			if err != nil {
+				writeError(w, 403, errors.New("use SSO gate"))
+				return
+			}
+			if write && (id.Role != "admin" || !sso.SameOrigin(r, s.PublicURL)) {
+				writeError(w, 403, errors.New("admin role and same origin required"))
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.SSO && s.Token == "" && s.ReadToken == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
